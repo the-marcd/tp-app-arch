@@ -1,11 +1,12 @@
 # cert-manager issues this into the Secret named below, solving DNS-01 against
 # the tp.darcsaint.net zone with the IRSA role from infra/irsa.tf.
 #
-# Points at letsencrypt-staging deliberately. Staging certificates are signed by
-# an untrusted root, so a browser will warn -- but production has hard rate
-# limits and failed DNS-01 attempts count against them. Switch the issuerRef to
-# letsencrypt-prod once a staging certificate has issued cleanly, and delete the
-# Secret so a new one is requested.
+# letsencrypt-prod, so the certificate chains to a trusted root and browsers do
+# not warn. Production rate limits are real: roughly 5 failed validations per
+# account, hostname and hour, and 50 certificates per registered domain per
+# week. A misconfiguration burns through the failure budget rather than just
+# retrying, so if this stops issuing, switch issuerRef to letsencrypt-staging
+# while debugging and switch back once it works.
 #
 # The Deployment mounts this Secret, so pods stay in ContainerCreating until the
 # certificate is issued. Watch it with:
@@ -20,7 +21,7 @@ spec:
   dnsNames:
     - site.tp.darcsaint.net
   issuerRef:
-    name: letsencrypt-staging
+    name: letsencrypt-prod
     kind: ClusterIssuer
     group: cert-manager.io
   privateKey:

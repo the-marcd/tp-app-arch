@@ -90,9 +90,10 @@ with audience `sts.amazonaws.com`, its mount, and the `AWS_ROLE_ARN`,
 carrying the (inert, off EKS) `eks.amazonaws.com/role-arn` annotation.
 
 **`cluster_base/cert-manager/clusterissuer-letsencrypt.yaml`** — Two ACME
-`ClusterIssuer` resources, staging and production, solving DNS-01 against
-hosted zone `Z0682799BUTOTN2MXMM1` with no static credentials, relying on the
-ambient credentials cert-manager applies to ClusterIssuers by default.
+`ClusterIssuer` resources, staging and production, contactable at
+`admin@tp.darcsaint.net`, solving DNS-01 against hosted zone
+`Z0682799BUTOTN2MXMM1` with no static credentials, relying on the ambient
+credentials cert-manager applies to ClusterIssuers by default.
 
 **`cluster_base/aws-load-balancer-controller/kustomization.yaml`** — Remote base
 on AWS Load Balancer Controller `v3.5.0` plus the patch below.
@@ -122,9 +123,9 @@ objects. It began as a narrower create/read/update rule set and was widened at
 the user's request.
 
 **`cluster_base/website-rolebinding.yaml`** — A `RoleBinding` in the `website`
-namespace tying that Role to a single `User` subject. The subject name ships as
-the placeholder `CHANGE-ME-username`, because RBAC does not validate that a
-subject exists and a wrong name applies cleanly while granting nothing.
+namespace tying that Role to the single `User` subject `webdeployer`. RBAC does
+not validate that a subject exists, so a name not matching the certificate's CN
+would apply cleanly while granting nothing.
 
 **`cluster_base/aws-load-balancer-controller/irsa-and-flags-patch.yaml`** — The
 same IRSA additions applied to the `controller` container of the
@@ -151,7 +152,7 @@ over `/etc/nginx/conf.d` so it replaces the image's default.
 
 **`website/certificate.yaml`** — A `cert-manager.io/v1` `Certificate` for
 `site.tp.darcsaint.net` issued into the `site-tls` Secret by the
-`letsencrypt-staging` ClusterIssuer, with an ECDSA P-256 key and
+`letsencrypt-prod` ClusterIssuer, with an ECDSA P-256 key and
 `rotationPolicy: Always`.
 
 **`website/deployment.yaml`** — An nginx `Deployment`, 2 replicas, pinned to

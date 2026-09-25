@@ -10,14 +10,14 @@
 # zone -- which is also what makes the ResolveZoneByName statement in the
 # cert-manager IAM policy droppable.
 #
-# Staging first. Let's Encrypt's production endpoint has strict rate limits and
-# failed DNS-01 attempts count against them.
+# Both issuers are defined; pick per Certificate via issuerRef. Production has
+# hard rate limits -- roughly 5 failed validations per account, hostname and hour
+# -- and failed DNS-01 attempts count against them, so staging is the one to
+# point at while debugging an issuance problem.
 #
-# SET THE CONTACT EMAIL BEFORE APPLYING. It is a placeholder on purpose: this
-# repo is public, and the address is registered with Let's Encrypt as the ACME
-# account contact. The .invalid TLD is reserved and cannot resolve, so an
-# unedited copy fails at account registration rather than quietly signing your
-# personal address up for expiry notices.
+# The contact address is registered with Let's Encrypt as the ACME account
+# contact and receives expiry notices. It only reaches anyone if the zone has an
+# MX record pointing somewhere that accepts mail.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -25,7 +25,7 @@ metadata:
 spec:
   acme:
     server: https://acme-staging-v02.api.letsencrypt.org/directory
-    email: CHANGE-ME@example.invalid
+    email: admin@tp.darcsaint.net
     privateKeySecretRef:
       name: letsencrypt-staging-account-key
     solvers:
@@ -43,7 +43,7 @@ metadata:
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
-    email: CHANGE-ME@example.invalid
+    email: admin@tp.darcsaint.net
     privateKeySecretRef:
       name: letsencrypt-prod-account-key
     solvers:

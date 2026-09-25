@@ -69,8 +69,6 @@ kubectl apply -k cluster_base/cert-manager
 kubectl -n cert-manager rollout status deploy/cert-manager
 
 # 2. issuers (needs the CRDs from step 1 to be established)
-#    EDIT THE CONTACT EMAIL FIRST -- it ships as CHANGE-ME@example.invalid so an
-#    unedited copy fails loudly instead of registering a placeholder with ACME
 kubectl apply -f cluster_base/cert-manager/clusterissuer-letsencrypt.yaml
 
 # 3. load balancer controller

@@ -12,8 +12,12 @@ Kubernetes has no User object. A client certificate *is* the identity:
 | `CN` (Common Name) | the username |
 | each `O` (Organization) | a group |
 
-So `/CN=alice/O=devs` authenticates as user `alice` in group `devs`. Both are
-RBAC subjects — bind roles to either.
+So `/CN=webdeployer/O=devs` authenticates as user `webdeployer` in group `devs`.
+Both are RBAC subjects — bind roles to either.
+
+This repo's `website-rolebinding.yaml` binds to the **user** `webdeployer`, so
+the worked example below passes no `-g`. Add groups with `-g` if you would rather
+bind by group.
 
 Two consequences worth internalising:
 
@@ -57,7 +61,7 @@ against a CN you have just read back, is what makes the mismatch visible.
 ## 1. Generate the key and submit the request
 
 ```sh
-./create-user-csr.sh alice -g devs
+./create-user-csr.sh webdeployer
 ```
 
 Options: `-g` adds a group (repeatable), `-e` sets the requested lifetime in
@@ -65,13 +69,13 @@ seconds (default 90 days, minimum 600 — the API server rejects less), `-o`
 chooses the output directory (default `./<username>`), `-n` writes the manifest
 without submitting it.
 
-This produces, in `./alice/`:
+This produces, in `./webdeployer/`:
 
 | File | |
 | --- | --- |
-| `alice.key` | the private key, mode 0600 |
-| `alice.csr` | the PEM certificate signing request |
-| `alice-csr.yaml` | the CertificateSigningRequest manifest |
+| `webdeployer.key` | the private key, mode 0600 |
+| `webdeployer.csr` | the PEM certificate signing request |
+| `webdeployer-csr.yaml` | the CertificateSigningRequest manifest |
 
 **The private key never leaves the machine that runs the script.** Only the CSR
 is submitted. Generate it wherever the user will keep it, or hand over the key
@@ -83,29 +87,29 @@ The `kubernetes.io/kube-apiserver-client` signer is **never auto-approved**;
 approval is always a deliberate act by someone with rights over it.
 
 ```sh
-kubectl get csr alice
-kubectl certificate approve alice
+kubectl get csr webdeployer
+kubectl certificate approve webdeployer
 ```
 
 Check the subject before approving — the requester chose the CN and O, which is
 to say they chose the username and groups they are asking to become:
 
 ```sh
-kubectl get csr alice -o jsonpath='{.spec.request}' | base64 -d | openssl req -noout -subject
+kubectl get csr webdeployer -o jsonpath='{.spec.request}' | base64 -d | openssl req -noout -subject
 ```
 
-To refuse instead: `kubectl certificate deny alice`.
+To refuse instead: `kubectl certificate deny webdeployer`.
 
 ## 3. Collect the signed certificate
 
 `make-kubeconfig.sh` does this and step 5 together, and is the easier path:
 
 ```sh
-./make-kubeconfig.sh alice
+./make-kubeconfig.sh webdeployer
 ```
 
 It reads `.status.certificate` — the certificate the cluster signed, not the
-request — writes it to `alice/alice.crt`, and builds `alice/alice.kubeconfig`
+request — writes it to `webdeployer/webdeployer.crt`, and builds `webdeployer/webdeployer.kubeconfig`
 around it. It refuses to run on a CSR that is denied, failed, still unapproved,
 or approved but not yet signed, rather than producing a kubeconfig with an empty
 certificate in it. It also checks the private key on disk matches the
@@ -118,8 +122,8 @@ context points at; `-c`, `-s` and `-a` override them.
 By hand, if you prefer:
 
 ```sh
-kubectl get csr alice -o jsonpath='{.status.certificate}' | base64 -d > alice/alice.crt
-openssl x509 -in alice/alice.crt -noout -subject -dates -issuer
+kubectl get csr webdeployer -o jsonpath='{.status.certificate}' | base64 -d > webdeployer/webdeployer.crt
+openssl x509 -in webdeployer/webdeployer.crt -noout -subject -dates -issuer
 ```
 
 If `.status.certificate` is empty, the signing controller has not issued it yet —
@@ -139,31 +143,35 @@ kubectl apply -f ../cluster_base/website-namespace.yaml
 kubectl apply -f ../cluster_base/website-role.yaml
 ```
 
-`website-editor` grants create/read/update on deployments, configmaps and
-services, and full CRUD on pods.
+`website-editor` grants wildcard verbs on wildcard resources within the
+namespace — full control of everything in `website`, and nothing outside it.
 
-**Edit the subject name in the RoleBinding before applying it.** It ships as
-`CHANGE-ME-username` and must equal the CN of the certificate from step 3:
+The RoleBinding's subject is already `webdeployer`, so it applies as-is:
 
 ```sh
-kubectl get csr alice -o jsonpath='{.spec.request}' | base64 -d \
-  | openssl req -noout -subject          # confirm the CN
-$EDITOR ../cluster_base/website-rolebinding.yaml
 kubectl apply -f ../cluster_base/website-rolebinding.yaml
 ```
 
-RBAC has no User object to validate against, so a wrong name applies cleanly and
-grants nothing — the failure shows up as the user being denied later, not as an
-error here. Step 6 is what catches it.
+**If you used a different username, edit the subject to match its CN.** RBAC has
+no User object to validate against, so a name that does not match applies
+cleanly and grants nothing — the failure shows up as the user being denied
+later, not as an error here. Confirm the CN if unsure:
+
+```sh
+kubectl get csr webdeployer -o jsonpath='{.spec.request}' | base64 -d \
+  | openssl req -noout -subject
+```
+
+Step 6 is what catches a mismatch.
 
 ### Ad hoc alternatives
 
 Bind to the user directly:
 
 ```sh
-kubectl create rolebinding alice-website-editor \
+kubectl create rolebinding webdeployer-website-editor \
   --role=website-editor \
-  --user=alice \
+  --user=webdeployer \
   --namespace=website
 ```
 
@@ -191,20 +199,20 @@ kubectl config set-cluster "$CLUSTER" \
   --server="$SERVER" \
   --certificate-authority=/etc/kubernetes/pki/ca.crt \
   --embed-certs=true \
-  --kubeconfig=alice/alice.kubeconfig
+  --kubeconfig=webdeployer/webdeployer.kubeconfig
 
-kubectl config set-credentials alice \
-  --client-certificate=alice/alice.crt \
-  --client-key=alice/alice.key \
+kubectl config set-credentials webdeployer \
+  --client-certificate=webdeployer/webdeployer.crt \
+  --client-key=webdeployer/webdeployer.key \
   --embed-certs=true \
-  --kubeconfig=alice/alice.kubeconfig
+  --kubeconfig=webdeployer/webdeployer.kubeconfig
 
-kubectl config set-context alice@"$CLUSTER" \
+kubectl config set-context webdeployer@"$CLUSTER" \
   --cluster="$CLUSTER" \
-  --user=alice \
-  --kubeconfig=alice/alice.kubeconfig
+  --user=webdeployer \
+  --kubeconfig=webdeployer/webdeployer.kubeconfig
 
-kubectl config use-context alice@"$CLUSTER" --kubeconfig=alice/alice.kubeconfig
+kubectl config use-context webdeployer@"$CLUSTER" --kubeconfig=webdeployer/webdeployer.kubeconfig
 ```
 
 `--embed-certs=true` inlines the material so the file is self-contained and can
@@ -214,12 +222,19 @@ the script writes it mode 0600; treat it accordingly.
 ## 6. Verify
 
 ```sh
-KC=alice/alice.kubeconfig
+KC=webdeployer/webdeployer.kubeconfig
 
 kubectl --kubeconfig=$KC auth whoami
-kubectl --kubeconfig=$KC auth can-i create pods        -n website   # yes
-kubectl --kubeconfig=$KC auth can-i delete pods        -n website   # yes
-kubectl --kubeconfig=$KC auth can-i delete deployments -n website   # no
+
+# inside the namespace: everything
+kubectl --kubeconfig=$KC auth can-i create deployments -n website      # yes
+kubectl --kubeconfig=$KC auth can-i delete deployments -n website      # yes
+kubectl --kubeconfig=$KC auth can-i get    secrets     -n website      # yes
+
+# outside it: nothing
+kubectl --kubeconfig=$KC auth can-i get    pods        -n kube-system  # no
+kubectl --kubeconfig=$KC auth can-i get    nodes                       # no
+
 kubectl --kubeconfig=$KC get pods -n website
 ```
 
@@ -227,10 +242,20 @@ kubectl --kubeconfig=$KC get pods -n website
 certificate — the quickest check that CN and O landed as intended, and the value
 the RoleBinding's subject name has to match.
 
-The three `can-i` checks exercise the shape of `website-editor` specifically:
-pods are full CRUD, deployments stop short of deletion. If `auth whoami` reports
-the right user but every `can-i` says no, the RoleBinding subject name does not
-match the CN — the failure mode step 4 warns about.
+The `can-i` checks prove both halves of what `website-editor` is meant to be:
+full control inside `website`, including its Secrets, and nothing at all outside
+it. The last two must answer **no** — a `yes` there means the binding is a
+ClusterRoleBinding rather than a RoleBinding, or points at a broader role.
+
+If `auth whoami` reports the right user but every `can-i` says no, the
+RoleBinding subject name does not match the CN — the failure mode step 4 warns
+about.
+
+For the full picture:
+
+```sh
+kubectl --kubeconfig=$KC auth can-i --list -n website
+```
 
 ## Notes for this cluster
 
@@ -240,7 +265,7 @@ match the CN — the failure mode step 4 warns about.
   control plane. From elsewhere, take the CA out of an existing kubeconfig:
   `kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d`.
 - CSR objects are named after the user, so a second request for the same person
-  needs the first deleted: `kubectl delete csr alice`. The script refuses rather
+  needs the first deleted: `kubectl delete csr webdeployer`. The script refuses rather
   than clobbering an existing one.
 - Renewal is this same process again. There is no rotation mechanism; expiry is
   the only bound on a certificate's life, which is the argument for short ones.

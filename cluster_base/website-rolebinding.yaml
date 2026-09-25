@@ -1,11 +1,14 @@
 # Binds the website-editor Role to a single user.
 #
-# >>> SET THE SUBJECT NAME BEFORE APPLYING. <<<
+# The subject must match the CN of the user's client certificate exactly, so
+# this expects a user created as:
 #
-# It must match the CN of the user's client certificate exactly. RBAC does not
-# validate that a subject exists -- there is no User object to check against --
-# so a wrong or unedited name applies cleanly and silently grants nothing. The
-# symptom is the user being denied at request time, not an error here.
+#   ./user_setup/create-user-csr.sh webdeployer
+#
+# RBAC does not validate that a subject exists -- there is no User object to
+# check against -- so a name that does not match applies cleanly and silently
+# grants nothing. The symptom is the user being denied at request time, not an
+# error here.
 #
 # Check what a certificate actually authenticates as:
 #   kubectl --kubeconfig=<theirs> auth whoami
@@ -20,7 +23,7 @@ metadata:
   namespace: website
 subjects:
   - kind: User
-    name: CHANGE-ME-username
+    name: webdeployer
     apiGroup: rbac.authorization.k8s.io
 roleRef:
   kind: Role

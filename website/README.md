@@ -50,19 +50,25 @@ kubectl -n website get certificate,secret
 DNS-01 needs a `_acme-challenge` TXT record to propagate, so first issuance takes
 a couple of minutes.
 
-## Staging first
+## Production certificates
 
-`certificate.yaml` points at `letsencrypt-staging`. Staging certificates are
-signed by an untrusted root, so browsers warn — but production has hard rate
-limits and failed DNS-01 attempts count against them.
+`certificate.yaml` points at `letsencrypt-prod`, so the certificate chains to a
+trusted root and browsers do not warn.
 
-Once a staging certificate issues cleanly:
+Production rate limits are real: roughly 5 failed validations per account,
+hostname and hour, and 50 certificates per registered domain per week. A
+misconfiguration spends the failure budget rather than simply retrying. If
+issuance starts failing, switch to staging while you debug and switch back:
 
 ```sh
-# edit certificate.yaml: issuerRef.name -> letsencrypt-prod
+# certificate.yaml: issuerRef.name -> letsencrypt-staging
 kubectl -n website delete secret site-tls     # forces a fresh request
 kubectl apply -f certificate.yaml
 ```
+
+The same two commands move it back to `letsencrypt-prod` afterwards — deleting
+the Secret is what makes cert-manager request again rather than reuse what it
+already has.
 
 ## Editing the page
 
@@ -104,7 +110,7 @@ from the load balancer group instead.
 kubectl -n website get svc site -o wide          # the NLB hostname
 kubectl -n website get certificate site-tls      # READY should be True
 dig +short site.tp.darcsaint.net                 # external-dns wrote this
-curl -sSv https://site.tp.darcsaint.net          # -k while on staging
+curl -sSv https://site.tp.darcsaint.net          # no -k needed on prod
 ```
 
 `dig` returning nothing points at external-dns: the delegation itself is in
