@@ -44,6 +44,10 @@
     signed_by: https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key
     uris:
       - https://pkgs.k8s.io/core:/stable:/v1.36/deb/
+  notify: Update apt cache
+
+- name: Update the apt cache now, not at end of play
+  ansible.builtin.meta: flush_handlers
 
 - name: Install common k8s packages
   ansible.builtin.apt:
