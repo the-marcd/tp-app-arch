@@ -3,3 +3,10 @@
 - name: Update apt cache
   ansible.builtin.apt:
     update_cache: true
+
+- name: Restart containerd
+  ansible.builtin.systemd:
+   name: containerd
+   daemon_reload: true
+   state: restarted
+   enabled: true

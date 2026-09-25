@@ -37,6 +37,31 @@
   with_items:
     - "{{ common_base_os_pkgs }}"
 
+- name: Add containerd config directory
+  ansible.builtin.file:
+   path: "/etc/containerd"
+   owner: root
+   group: root
+   mode: "0644"
+   state: directory
+
+- name: Set up containerd cgroup config
+  ansible.builtin.copy:
+   src: files/containerd-config.toml
+   dest: /etc/containerd/config.toml
+   owner: root
+   group: root
+   mode: "0644"
+  notify:
+   - Restart containerd
+
+# Handlers otherwise run at the very end of the play -- long after kubeadm init.
+# The systemd cgroup driver would then not be in effect for the init that needs
+# it, and the kubelet/containerd driver mismatch would stall the control plane.
+# Flushing here restarts containerd before anything below uses it.
+- name: Apply the containerd restart now, not at end of play
+  ansible.builtin.meta: flush_handlers
+
 - name: Add k8s repo
   ansible.builtin.deb822_repository:
     name: kubernetes
