@@ -29,7 +29,13 @@ metadata:
     service.beta.kubernetes.io/aws-load-balancer-security-groups: "tp-app-load-balancer"
 
     # external-dns creates the record in the tp.darcsaint.net zone.
-    external-dns.alpha.kubernetes.io/hostname: "site.tp.darcsaint.net"
+    #
+    # Prefix is external-dns.kubernetes.io/, not the older
+    # external-dns.alpha.kubernetes.io/. external-dns changed the default prefix
+    # and ships with --enable-legacy-annotation-prefix disabled, so the alpha
+    # form is ignored outright: no error, no endpoint, just "All records are
+    # already up to date" on every sync.
+    external-dns.kubernetes.io/hostname: "site.tp.darcsaint.net"
 spec:
   type: LoadBalancer
   selector:

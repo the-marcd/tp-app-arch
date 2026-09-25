@@ -163,7 +163,9 @@ readiness and liveness probes and modest resource requests.
 annotated for the AWS Load Balancer Controller (`aws-load-balancer-type:
 external`, `scheme: internet-facing`, `nlb-target-type: instance`, and
 `security-groups` naming the `tp-app-load-balancer` group by its Name tag) and
-for external-dns (`hostname: site.tp.darcsaint.net`).
+for external-dns (`external-dns.kubernetes.io/hostname: site.tp.darcsaint.net`
+— the current prefix; the older `external-dns.alpha.kubernetes.io/` form is
+ignored by default and fails silently).
 
 ### `user_setup/`
 

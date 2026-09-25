@@ -120,3 +120,18 @@ match the zone's four Route 53 name servers. Check the controller's logs:
 ```sh
 kubectl -n kube-system logs deploy/external-dns
 ```
+
+### The annotation prefix trap
+
+The hostname annotation is `external-dns.kubernetes.io/hostname`. The older
+`external-dns.alpha.kubernetes.io/` prefix is **ignored by default** — current
+external-dns ships `--enable-legacy-annotation-prefix` disabled.
+
+It fails silently. No warning, no error, no mention of the Service; external-dns
+simply generates no endpoints and logs `All records are already up to date` on
+every sync while Route 53 stays empty. Confirm which prefix is in force from the
+config dump at the top of its logs:
+
+```sh
+kubectl -n kube-system logs deploy/external-dns | head -1 | tr ' ' '\n' | grep -i annotationprefix
+```
