@@ -1,0 +1,60 @@
+# IRSA wiring plus the flags a non-EKS cluster needs.
+#
+# As with cert-manager, there is no pod identity webhook here, so the projected
+# token and the AWS_* variables are set by hand.
+#
+# The args list is replaced wholesale: strategic-merge has no merge key for a
+# list of scalars, so every argument the controller needs must appear here.
+# Upstream ships --cluster-name=your-cluster-name and --ingress-class=alb; the
+# rest are required off EKS, where the controller cannot discover the cluster
+# name or VPC for itself.
+#
+# The container is named "controller", not "aws-load-balancer-controller" --
+# the patch silently does nothing if that name stops matching.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aws-load-balancer-controller
+  namespace: kube-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: controller
+          args:
+            - --cluster-name=tp-app
+            - --ingress-class=alb
+            - --aws-vpc-id=vpc-08f394e01158bf14e
+            - --aws-region=us-east-1
+          env:
+            - name: AWS_ROLE_ARN
+              value: arn:aws:iam::757743287485:role/tp-app-aws-load-balancer-controller
+            - name: AWS_WEB_IDENTITY_TOKEN_FILE
+              value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_DEFAULT_REGION
+              value: us-east-1
+            - name: AWS_STS_REGIONAL_ENDPOINTS
+              value: regional
+          volumeMounts:
+            - name: aws-iam-token
+              mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+              readOnly: true
+      volumes:
+        - name: aws-iam-token
+          projected:
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  audience: sts.amazonaws.com
+                  expirationSeconds: 86400
+                  path: token
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aws-load-balancer-controller
+  namespace: kube-system
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::757743287485:role/tp-app-aws-load-balancer-controller

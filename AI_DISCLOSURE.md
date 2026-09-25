@@ -12,10 +12,17 @@ than claiming the whole file.
 | File | Contributed by this program |
 | --- | --- |
 | `AI_DISCLOSURE.md` | This file. |
+| `cluster_base/README.md` | All content. |
+| `cluster_base/cert-manager/kustomization.yaml` | All content. |
+| `cluster_base/cert-manager/irsa-patch.yaml` | All content. |
+| `cluster_base/cert-manager/clusterissuer-letsencrypt.yaml` | All content. |
+| `cluster_base/aws-load-balancer-controller/kustomization.yaml` | All content. |
+| `cluster_base/aws-load-balancer-controller/irsa-and-flags-patch.yaml` | All content. |
 | `systems/roles/k8smaster/files/kubeadm-config.yaml` | All content. |
 | `systems/roles/k8smaster/files/containerd-config.toml` | All content (replacing a user-authored file). |
 | `systems/roles/k8smaster/tasks/main.yml` | Partial: specific task edits only, described below. |
 | `systems/roles/k8snode/tasks/main.yml` | Partial: three bug fixes only, described below. |
+| `systems/roles/common/tasks/main.yml` | Partial: four appended tasks only, described below. |
 | `.claude/settings.json` | All content. |
 | `.claude/hooks/ai-disclosure-reminder.sh` | All content. |
 | `infra/README.md` | All content. |
@@ -47,6 +54,54 @@ than claiming the whole file.
 
 This disclosure document, in the repository root.
 
+### `cluster_base/`
+
+Kustomize overlays for the in-cluster components, patching pinned upstream
+release manifests rather than vendoring them. Every value in them was read out
+of `infra/`'s Terraform state.
+
+**`cluster_base/README.md`** — How the IRSA wiring substitutes for the EKS pod
+identity webhook, the table of values and where they came from, the install
+order, verification commands, the version-pinning hazard, and the known gaps.
+
+**`cluster_base/cert-manager/kustomization.yaml`** — Remote base on
+cert-manager `v1.21.2` plus the patch below.
+
+**`cluster_base/cert-manager/irsa-patch.yaml`** — A strategic-merge patch on the
+`cert-manager` Deployment in the `cert-manager` namespace adding, to the
+`cert-manager-controller` container, a projected `serviceAccountToken` volume
+with audience `sts.amazonaws.com`, its mount, and the `AWS_ROLE_ARN`,
+`AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_REGION`, `AWS_DEFAULT_REGION` and
+`AWS_STS_REGIONAL_ENDPOINTS` environment variables; plus the ServiceAccount
+carrying the (inert, off EKS) `eks.amazonaws.com/role-arn` annotation.
+
+**`cluster_base/cert-manager/clusterissuer-letsencrypt.yaml`** — Two ACME
+`ClusterIssuer` resources, staging and production, solving DNS-01 against
+hosted zone `Z0682799BUTOTN2MXMM1` with no static credentials, relying on the
+ambient credentials cert-manager applies to ClusterIssuers by default.
+
+**`cluster_base/aws-load-balancer-controller/kustomization.yaml`** — Remote base
+on AWS Load Balancer Controller `v3.5.0` plus the patch below.
+
+**`cluster_base/aws-load-balancer-controller/irsa-and-flags-patch.yaml`** — The
+same IRSA additions applied to the `controller` container of the
+`aws-load-balancer-controller` Deployment in `kube-system`, and a wholesale
+replacement of its `args` with `--cluster-name`, `--ingress-class`,
+`--aws-vpc-id` and `--aws-region`, the latter two being required off EKS.
+
+### `systems/roles/common/tasks/main.yml`
+
+**Not an AI-authored file** — the role is the user's. This program appended four
+tasks to it and wrote nothing else: a `uri` PUT for an IMDSv2 token, a looped
+`uri` reading `instance-id` and `placement/availability-zone`, a `set_fact`
+assembling `aws:///<az>/<instance-id>`, and a `lineinfile` writing
+`KUBELET_EXTRA_ARGS=--provider-id=...` into `/etc/default/kubelet`.
+
+They sit in the common role because both playbooks run it first, and
+`spec.providerID` is only settable while a Node is registering — at `kubeadm
+init` for the control plane and `kubeadm join` for a worker. They are placed
+after the kubelet package install so the package cannot overwrite the file.
+
 ### `systems/roles/k8snode/tasks/main.yml`
 
 **Not an AI-authored file** — the role is the user's. This program fixed three
@@ -64,10 +119,13 @@ defects in it and wrote nothing else:
    `shell: |` block, making the shell treat the whole string as one command name
    (rc 127, "not found"). Unquoted it.
 
-Plus one change made at the user's request rather than as a fix: an
-`args: creates: /etc/kubernetes/kubelet.conf` guard on the "Join cluster" task,
-so a re-run is a no-op instead of a `kubeadm join` preflight failure. It mirrors
-the guard on `kubeadm init` in the k8smaster role.
+Plus two changes made at the user's request rather than as fixes:
+
+- An `args: creates: /etc/kubernetes/kubelet.conf` guard on the "Join cluster"
+  task, so a re-run is a no-op instead of a `kubeadm join` preflight failure. It
+  mirrors the guard on `kubeadm init` in the k8smaster role.
+- Four tasks setting the node's `providerID`, since relocated into the common
+  role (see below) so the control plane gets them too.
 
 Explanatory comments accompany each change.
 

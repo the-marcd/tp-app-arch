@@ -1,0 +1,55 @@
+# ACME issuers solving DNS-01 against the tp.darcsaint.net zone.
+#
+# The route53 block carries no accessKeyID/secretAccessKey: cert-manager uses
+# ambient credentials, which it applies to ClusterIssuer resources by default
+# (Issuer resources would additionally need --issuer-ambient-credentials). It
+# finds the role and region from the environment variables the IRSA patch sets
+# on the controller pod.
+#
+# hostedZoneID is set so cert-manager does not have to resolve the domain to a
+# zone -- which is also what makes the ResolveZoneByName statement in the
+# cert-manager IAM policy droppable.
+#
+# Staging first. Let's Encrypt's production endpoint has strict rate limits and
+# failed DNS-01 attempts count against them.
+#
+# SET THE CONTACT EMAIL BEFORE APPLYING. It is a placeholder on purpose: this
+# repo is public, and the address is registered with Let's Encrypt as the ACME
+# account contact. The .invalid TLD is reserved and cannot resolve, so an
+# unedited copy fails at account registration rather than quietly signing your
+# personal address up for expiry notices.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: CHANGE-ME@example.invalid
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - dns01:
+          route53:
+            hostedZoneID: Z0682799BUTOTN2MXMM1
+        selector:
+          dnsZones:
+            - tp.darcsaint.net
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: CHANGE-ME@example.invalid
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - dns01:
+          route53:
+            hostedZoneID: Z0682799BUTOTN2MXMM1
+        selector:
+          dnsZones:
+            - tp.darcsaint.net

@@ -1,0 +1,60 @@
+# IRSA wiring for the cert-manager controller, done by hand.
+#
+# On EKS the pod identity webhook injects the projected token volume and the
+# AWS_* environment variables automatically. This cluster is self-managed, so
+# there is no webhook and the same three things are set explicitly:
+#
+#   1. a projected serviceAccountToken with audience sts.amazonaws.com
+#   2. AWS_ROLE_ARN pointing at the IRSA role
+#   3. AWS_WEB_IDENTITY_TOKEN_FILE pointing at the projected token
+#
+# The AWS SDK's default credential chain picks those up with no further config.
+# Only the controller Deployment needs this; cainjector and webhook make no AWS
+# calls.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  template:
+    spec:
+      containers:
+        - name: cert-manager-controller
+          env:
+            - name: AWS_ROLE_ARN
+              value: arn:aws:iam::757743287485:role/tp-app-cert-manager
+            - name: AWS_WEB_IDENTITY_TOKEN_FILE
+              value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+            # cert-manager reads the Route 53 region from the environment when
+            # the issuer's route53 block leaves it unset.
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_DEFAULT_REGION
+              value: us-east-1
+            # Use the in-region STS endpoint rather than the global one.
+            - name: AWS_STS_REGIONAL_ENDPOINTS
+              value: regional
+          volumeMounts:
+            - name: aws-iam-token
+              mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+              readOnly: true
+      volumes:
+        - name: aws-iam-token
+          projected:
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  audience: sts.amazonaws.com
+                  expirationSeconds: 86400
+                  path: token
+---
+# Inert outside EKS -- nothing reads it without the webhook -- but it keeps the
+# role association discoverable from the cluster.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::757743287485:role/tp-app-cert-manager

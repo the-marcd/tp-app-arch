@@ -80,3 +80,63 @@
     state: present
   with_items:
     - "{{ common_k8s_pkgs }}"
+
+# --------------------------------------------------------------------------
+# providerID, set before this node registers.
+#
+# Lives in common because both roles need it and both run common first: the
+# master registers at kubeadm init, a worker at kubeadm join, and spec.providerID
+# is only settable while a Node is registering -- it is immutable once written.
+#
+# The AWS Load Balancer Controller resolves a Node to an EC2 instance through
+# spec.providerID -- ExtractNodeInstanceID reads it, splits on "/" and matches
+# the last segment against ^i-[^/]*$. Without it, instance-mode target
+# registration fails with "providerID is not specified for node".
+#
+# kubeadm leaves it empty because there is no cloud provider configured here.
+#
+# kubelet's --provider-id flag is the mechanism. It is not deprecated -- the
+# upstream flag registration puts it in the notDeprecated map. kubeadm's systemd
+# drop-in sources /etc/default/kubelet and appends $KUBELET_EXTRA_ARGS last, so
+# writing it there is enough.
+#
+# IMDSv2 only: imds_hop_limit is 1 on these instances, which still permits the
+# node itself, and http_tokens is "required" so the PUT for a token is not
+# optional.
+# --------------------------------------------------------------------------
+
+- name: Get an IMDSv2 token
+  ansible.builtin.uri:
+   url: http://169.254.169.254/latest/api/token
+   method: PUT
+   headers:
+    X-aws-ec2-metadata-token-ttl-seconds: "300"
+   return_content: true
+  register: imds_token
+
+- name: Read this instance's id and availability zone from IMDS
+  ansible.builtin.uri:
+   url: "http://169.254.169.254/latest/meta-data/{{ item }}"
+   headers:
+    X-aws-ec2-metadata-token: "{{ imds_token.content }}"
+   return_content: true
+  loop:
+   - instance-id
+   - placement/availability-zone
+  register: imds
+
+- name: Build the providerID
+  ansible.builtin.set_fact:
+   provider_id: "aws:///{{ imds.results[1].content }}/{{ imds.results[0].content }}"
+
+# lineinfile rather than copy: /etc/default/kubelet may already carry other
+# KUBELET_EXTRA_ARGS content, and overwriting it would discard them.
+- name: Set the kubelet provider-id
+  ansible.builtin.lineinfile:
+   path: /etc/default/kubelet
+   regexp: '^KUBELET_EXTRA_ARGS='
+   line: 'KUBELET_EXTRA_ARGS=--provider-id={{ provider_id }}'
+   create: true
+   owner: root
+   group: root
+   mode: '0644'
