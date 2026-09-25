@@ -270,12 +270,22 @@ The two S3 policies differ only in write access:
 
 | Policy | Role | Bucket | Actions |
 | --- | --- | --- | --- |
-| `<name>-s3-access` | master | application | `s3:ListBucket`; `s3:GetObject`, `s3:PutObject`, `s3:PutObjectAcl` |
-| `<name>-s3-access` | master | OIDC | `s3:ListBucket`; `s3:PutObject`, `s3:PutObjectAcl` |
-| `<name>-s3-read` | workers | application | `s3:ListBucket`; `s3:GetObject` |
+| `<name>-s3-access` | master | application | `s3:ListBucket`; `s3:GetObject`, `s3:GetObjectTagging`, `s3:PutObject`, `s3:PutObjectAcl` |
+| `<name>-s3-access` | master | OIDC | `s3:ListBucket`; `s3:GetObjectTagging`, `s3:PutObject`, `s3:PutObjectAcl` |
+| `<name>-s3-read` | workers | application | `s3:ListBucket`; `s3:GetObject`, `s3:GetObjectTagging` |
 
 Every statement is scoped to a named bucket — `ListBucket` on the bucket ARN,
 object actions on `<arn>/*`.
+
+`s3:GetObjectTagging` accompanies every object action.
+`amazon.aws.s3_object` reads object tags when deciding whether an object needs
+updating, so a put or get can fail with `AccessDenied` on the tagging call even
+when the object action itself is allowed.
+
+**The OIDC bucket is the control plane's alone.** The worker role has no
+statement naming it at all — the master publishes the discovery documents, and
+nothing on a worker needs S3 API access to that bucket, which is world-readable
+over plain HTTPS anyway.
 
 **`s3:PutObjectAcl` is granted in IAM but will not work against either bucket as
 configured.** Both set `block_public_acls` and `ignore_public_acls`, and neither

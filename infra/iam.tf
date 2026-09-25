@@ -88,7 +88,7 @@ data "aws_iam_policy_document" "s3_access" {
   statement {
     sid       = "ReadWriteObjects"
     effect    = "Allow"
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:PutObjectAcl"]
+    actions   = ["s3:GetObject", "s3:GetObjectTagging", "s3:PutObject", "s3:PutObjectAcl"]
     resources = ["${aws_s3_bucket.main.arn}/*"]
   }
 
@@ -106,7 +106,7 @@ data "aws_iam_policy_document" "s3_access" {
   statement {
     sid       = "WriteOidcObjects"
     effect    = "Allow"
-    actions   = ["s3:PutObject", "s3:PutObjectAcl"]
+    actions   = ["s3:GetObjectTagging", "s3:PutObject", "s3:PutObjectAcl"]
     resources = ["${aws_s3_bucket.oidc.arn}/*"]
   }
 }
@@ -122,6 +122,9 @@ resource "aws_iam_role_policy_attachment" "k8s_master_s3_access" {
   policy_arn = aws_iam_policy.s3_access.arn
 }
 
+# Application bucket only. The OIDC bucket is the control plane's alone: the
+# master publishes the discovery documents there, and nothing on a worker needs
+# S3 API access to that bucket -- it is world-readable over plain HTTPS.
 data "aws_iam_policy_document" "s3_read" {
   statement {
     sid       = "ListTheBucket"
@@ -133,7 +136,7 @@ data "aws_iam_policy_document" "s3_read" {
   statement {
     sid       = "ReadObjects"
     effect    = "Allow"
-    actions   = ["s3:GetObject"]
+    actions   = ["s3:GetObject", "s3:GetObjectTagging"]
     resources = ["${aws_s3_bucket.main.arn}/*"]
   }
 }

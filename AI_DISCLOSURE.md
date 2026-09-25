@@ -253,11 +253,12 @@ instance, and `<var.name>-k8s-node`, wired to the `k8s_worker` nodes. Both get
 the AWS-managed `AmazonEC2ContainerRegistryReadOnly`. Two customer-managed S3
 policies built from policy documents and scoped to the bucket in s3.tf:
 `<var.name>-s3-access` (on the application bucket: `s3:ListBucket`,
-`s3:GetObject`, `s3:PutObject` and `s3:PutObjectAcl`; on the OIDC bucket:
-`s3:ListBucket`, `s3:PutObject` and `s3:PutObjectAcl`) attached to the master
-role, and
-`<var.name>-s3-read` (`s3:ListBucket` and `s3:GetObject`) attached to the node
-role. Also `aws_iam_policy.aws_load_balancer_controller`, whose document is read
+`s3:GetObject`, `s3:GetObjectTagging`, `s3:PutObject` and `s3:PutObjectAcl`; on
+the OIDC bucket: `s3:ListBucket`, `s3:GetObjectTagging`, `s3:PutObject` and
+`s3:PutObjectAcl`) attached to the master role, and
+`<var.name>-s3-read` (on the application bucket only: `s3:ListBucket`,
+`s3:GetObject` and `s3:GetObjectTagging` -- the OIDC bucket is reachable from the
+master role alone) attached to the node role. Also `aws_iam_policy.aws_load_balancer_controller`, whose document is read
 with `file()` from the vendored JSON under policies/, attached to both roles
 (IRSA is unavailable on this self-managed cluster, so the permissions sit on the
 instance roles). The bastion gets no instance profile, and no CNI policy is
