@@ -9,13 +9,28 @@ output "vpc_cidr_block" {
 }
 
 output "public_subnet_id" {
-  description = "ID of the public subnet."
+  description = "ID of the public subnet in the first AZ."
   value       = aws_subnet.public.id
 }
 
+output "public_subnet_ids" {
+  description = "IDs of both public subnets, for load balancer placement."
+  value       = [aws_subnet.public.id, aws_subnet.public_b.id]
+}
+
 output "private_subnet_id" {
-  description = "ID of the private subnet."
+  description = "ID of the private subnet in the first AZ."
   value       = aws_subnet.private.id
+}
+
+output "private_subnet_ids" {
+  description = "IDs of both private subnets."
+  value       = [aws_subnet.private.id, aws_subnet.private_b.id]
+}
+
+output "cluster_name" {
+  description = "Cluster name used in the kubernetes.io/cluster subnet tag; pass to the controller as --cluster-name."
+  value       = local.cluster_name
 }
 
 output "internet_gateway_id" {
@@ -24,13 +39,13 @@ output "internet_gateway_id" {
 }
 
 output "nat_gateway_id" {
-  description = "ID of the NAT gateway, or null when enable_nat_gateway is false."
-  value       = one(aws_nat_gateway.main[*].id)
+  description = "ID of the NAT gateway."
+  value       = aws_nat_gateway.main.id
 }
 
 output "nat_gateway_public_ip" {
-  description = "Public IP of the NAT gateway, or null when enable_nat_gateway is false."
-  value       = one(aws_eip.nat[*].public_ip)
+  description = "Public IP of the NAT gateway."
+  value       = aws_eip.nat.public_ip
 }
 
 output "public_route_table_id" {
@@ -108,32 +123,68 @@ output "k8s_worker_security_group_id" {
   value       = aws_security_group.k8s_worker.id
 }
 
-output "vpc_endpoint_ecr_api_id" {
-  description = "ID of the ECR API interface endpoint."
-  value       = aws_vpc_endpoint.ecr_api.id
-}
-
-output "vpc_endpoint_ecr_dkr_id" {
-  description = "ID of the ECR Docker registry interface endpoint."
-  value       = aws_vpc_endpoint.ecr_dkr.id
-}
-
 output "vpc_endpoint_s3_id" {
   description = "ID of the S3 gateway endpoint."
   value       = aws_vpc_endpoint.s3.id
 }
 
-output "vpc_endpoints_security_group_id" {
-  description = "ID of the interface endpoints' security group."
-  value       = aws_security_group.vpc_endpoints.id
-}
 
 output "node_iam_role_arn" {
-  description = "ARN of the k8s node IAM role."
+  description = "ARN of the k8s worker node IAM role."
   value       = aws_iam_role.node.arn
 }
 
 output "node_instance_profile_name" {
-  description = "Name of the k8s node instance profile."
+  description = "Name of the k8s worker node instance profile."
   value       = aws_iam_instance_profile.node.name
+}
+
+output "k8s_master_iam_role_arn" {
+  description = "ARN of the k8s control plane IAM role."
+  value       = aws_iam_role.k8s_master.arn
+}
+
+output "k8s_master_instance_profile_name" {
+  description = "Name of the k8s control plane instance profile."
+  value       = aws_iam_instance_profile.k8s_master.name
+}
+
+output "s3_bucket_name" {
+  description = "Name of the application S3 bucket."
+  value       = aws_s3_bucket.main.id
+}
+
+output "s3_bucket_arn" {
+  description = "ARN of the application S3 bucket."
+  value       = aws_s3_bucket.main.arn
+}
+
+output "s3_access_policy_arn" {
+  description = "ARN of the read/write S3 policy attached to the control plane role."
+  value       = aws_iam_policy.s3_access.arn
+}
+
+output "s3_read_policy_arn" {
+  description = "ARN of the read-only S3 policy attached to the worker node role."
+  value       = aws_iam_policy.s3_read.arn
+}
+
+output "aws_load_balancer_controller_policy_arn" {
+  description = "ARN of the vendored AWS Load Balancer Controller policy."
+  value       = aws_iam_policy.aws_load_balancer_controller.arn
+}
+
+output "oidc_bucket_name" {
+  description = "Name of the public OIDC discovery bucket."
+  value       = aws_s3_bucket.oidc.id
+}
+
+output "oidc_bucket_arn" {
+  description = "ARN of the public OIDC discovery bucket."
+  value       = aws_s3_bucket.oidc.arn
+}
+
+output "oidc_issuer_url" {
+  description = "Issuer URL for the OIDC bucket; use as kube-apiserver --service-account-issuer and as the IAM OIDC provider URL."
+  value       = "https://${aws_s3_bucket.oidc.bucket_regional_domain_name}"
 }

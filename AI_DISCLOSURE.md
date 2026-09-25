@@ -27,6 +27,8 @@ contained no files other than `.git` before this work began.
 | `infra/security_groups.tf` | All content. |
 | `infra/vpc_endpoints.tf` | All content. |
 | `infra/iam.tf` | All content. |
+| `infra/s3.tf` | All content. |
+| `infra/policies/aws-load-balancer-controller-iam-policy.json` | Vendored upstream file, not authored. |
 | `infra/key_pairs.tf` | All content. |
 | `infra/outputs.tf` | All content. |
 
@@ -39,15 +41,16 @@ This disclosure document, in the repository root.
 ### `infra/`
 
 A flat Terraform configuration (no modules, per instruction) describing a single
-AWS VPC with one public and one private subnet, an internet gateway, an optional
-NAT gateway, four EC2 instances, VPC endpoints for ECR and S3, and a node IAM
-role for the AWS VPC CNI. Written against Terraform >= 1.5 and AWS
+AWS VPC with one public and one private subnet, an internet gateway, a NAT
+gateway, EC2 instances for a bastion and a k8s cluster, VPC endpoints for ECR and S3, an S3 bucket, and
+IAM roles and instance profiles for the control plane and the worker nodes. The
+pod network is Flannel (VXLAN backend). Written against Terraform >= 1.5 and AWS
 provider ~> 5.0.
 
 **`infra/README.md`** — Documentation for the configuration: a table of the files
 and their contents, the CIDR allocation table, an explanation of the public and
-private routing, the NAT gateway flag and its cost implications, and basic
-`init` / `plan` / `apply` usage.
+private routing, the compute/IAM/S3 and firewall-rule tables, the Flannel pod
+network requirements, and basic `init` / `plan` / `apply` usage.
 
 **`infra/.gitignore`** — Ignore rules for Terraform working files: `.terraform/`,
 the lock file, state files and backups, crash logs, `*.tfvars` (with an exception
@@ -63,37 +66,46 @@ so state is local.
 **`infra/variables.tf`** — All input variables: `region` (default `us-east-1`),
 `name` (resource name prefix, default `tp-app`), `vpc_cidr`, `public_subnet_cidr`,
 `private_subnet_cidr`, `public_subnet_az` and `private_subnet_az` (nullable, fall
-back to the first available AZ), `map_public_ip_on_launch`, `enable_nat_gateway`
-(bool, default `false`), `ubuntu_version` (`26.04`), `bastion_instance_type`
-(`t4g.nano`), `bastion_root_volume_size` (`10`), `k8s_master_instance_type`
-(`t4g.medium`), `k8s_master_root_volume_size` (`20`), `k8s_worker_count` (`2`),
-`k8s_worker_instance_type` (`t4g.small`), `k8s_worker_root_volume_size` (`20`),
-the two required SSH
-public-key variables `bastion_public_key` and `k8s_public_key` (each validated
-against OpenSSH `authorized_keys` format), and `tags`.
+back to the first available AZ), `map_public_ip_on_launch`, `bastion_ssh_cidrs`
+(list, default `["47.197.109.105/32"]`, each entry validated as a CIDR),
+`ubuntu_version` (`26.04`), `bastion_instance_type` (`t4g.nano`),
+`bastion_root_volume_size` (`10`), `k8s_master_instance_type` (`t4g.medium`),
+`public_subnet_b_cidr` (`172.31.2.0/24`), `private_subnet_b_cidr`
+(`172.31.3.0/24`), `public_subnet_b_az` and `private_subnet_b_az` (nullable,
+fall back to the second AZ), `cluster_name` (nullable, falls back to `name`),
+`k8s_master_root_volume_size` (`20`), `k8s_worker_count` (default `0`, so no
+workers are built unless set), `k8s_worker_instance_type` (`t4g.small`),
+`k8s_worker_root_volume_size` (`20`), `imds_hop_limit` (`1`, validated 1-64),
+the two required SSH public-key
+path variables `bastion_public_key_path` and `k8s_public_key_path`,
+`s3_bucket_name` and `oidc_bucket_name` (both nullable), and `tags`.
 
 **`infra/vpc.tf`** — An `aws_availability_zones` data source filtered to available,
-non-opt-in AZs; a `locals` block resolving the public and private AZ via
-`coalesce`; and the `aws_vpc.main` resource with `172.31.0.0/22` and DNS support
+non-opt-in AZs; a `locals` block resolving all four subnet AZs via `coalesce`
+(the first two AZs in the region), the cluster name, and the shared
+`kubernetes.io/cluster` tag map; and the `aws_vpc.main` resource with `172.31.0.0/22` and DNS support
 and hostnames enabled.
 
-**`infra/subnets.tf`** — `aws_subnet.public` (`172.31.0.0/24`, public IP assignment
-driven by `var.map_public_ip_on_launch`) and `aws_subnet.private`
-(`172.31.1.0/24`, public IP assignment forced off). Both are tagged with a `Name`
-and a `Tier`.
+**`infra/subnets.tf`** — Four subnets across two availability zones:
+`aws_subnet.public` (`172.31.0.0/24`) and `aws_subnet.public_b`
+(`172.31.2.0/24`), both honouring `var.map_public_ip_on_launch`; and
+`aws_subnet.private` (`172.31.1.0/24`) and `aws_subnet.private_b`
+(`172.31.3.0/24`), both with public IP assignment forced off. Each carries
+`Name` and `Tier` tags plus the AWS Load Balancer Controller's discovery tags —
+`kubernetes.io/cluster/<cluster name>` on all four, `kubernetes.io/role/elb` on
+the public pair and `kubernetes.io/role/internal-elb` on the private pair.
 
 **`infra/internet_gateway.tf`** — `aws_internet_gateway.main`, attached to the VPC.
 
-**`infra/nat_gateway.tf`** — `aws_eip.nat` and `aws_nat_gateway.main`, both gated
-on `var.enable_nat_gateway` via `count` so that nothing is provisioned by default.
-The NAT gateway is placed in the public subnet and declares an explicit
-`depends_on` for the internet gateway.
+**`infra/nat_gateway.tf`** — `aws_eip.nat` and `aws_nat_gateway.main`, both
+unconditionally provisioned. The NAT gateway is placed in the public subnet and
+declares an explicit `depends_on` for the internet gateway.
 
 **`infra/route_tables.tf`** — `aws_route_table.public` with
 `aws_route.public_default` sending `0.0.0.0/0` to the internet gateway;
 `aws_route_table.private` with `aws_route.private_default` sending `0.0.0.0/0` to
-the NAT gateway, gated on `var.enable_nat_gateway` via `count`; and the
-`aws_route_table_association` resources binding each route table to its subnet.
+the NAT gateway; and the `aws_route_table_association` resources binding each
+route table to its subnet.
 
 **`infra/ec2.tf`** — One `aws_ami` data source, `ubuntu`, resolving Canonical's
 most recent arm64 Ubuntu image for `var.ubuntu_version` (codename wildcarded,
@@ -101,44 +113,74 @@ owner pinned to Canonical's account `099720109477`) and shared by every
 instance. Three Graviton instance resources: `bastion_ec2`, a `t4g.nano` wired
 directly to the public subnet with a 10 GiB encrypted gp3 root volume and the
 bastion key pair; `k8s_master`, a `t4g.medium` in the private subnet with a
-20 GiB encrypted gp3 root volume; and `k8s_worker`, a `count`ed pair of
-`t4g.small` nodes in the private subnet with 20 GiB encrypted gp3 root volumes.
-Both k8s roles use the shared k8s key pair.
+20 GiB encrypted gp3 root volume; and `k8s_worker`, a `count`ed set of
+`t4g.small` nodes (`var.k8s_worker_count`, default 0) in the private subnet with
+20 GiB encrypted gp3 root volumes.
+Both k8s roles use the shared k8s key pair. Every instance sets
+`metadata_options` requiring IMDSv2, exposing instance tags, and capping the PUT
+response hop limit at `var.imds_hop_limit` (default 1) so pods cannot reach the
+instance role's credentials.
 
 **`infra/security_groups.tf`** — The `bastion_ec2`, `k8s_master` and
 `k8s_worker` security groups, plus their rules as standalone
 `aws_vpc_security_group_ingress_rule` / `aws_vpc_security_group_egress_rule`
 resources (standalone rather than inline because the master and worker groups
-reference each other). Unrestricted egress for all three; SSH from the bastion
+reference each other). Unrestricted egress for all three; SSH to the bastion
+from each CIDR in `var.bastion_ssh_cidrs` via `for_each`; SSH from the bastion
 to both k8s roles; and, following a port table supplied by the user, 6443 to
 the master from workers and bastion, 2379-2380, 10250, 10257 and 10259 within
 the control plane, 10250 to workers from the control plane, 10256 to workers
-from themselves, and 30000-32767 TCP and UDP to workers from the VPC CIDR. No
-CNI / pod-network rules: that table lists none.
+from themselves, and 30000-32767 TCP and UDP to workers from the VPC CIDR.
+Pod-network rules for Flannel's default VXLAN backend: UDP 8472 in both
+directions between the master and worker groups and within each group.
 
-**`infra/iam.tf`** — An `aws_iam_role` (`<var.name>-k8s-node`) with an EC2
-`sts:AssumeRole` trust policy built from an `aws_iam_policy_document`;
-attachments of the AWS-managed `AmazonEKS_CNI_Policy` (ipamd ENI management)
-and `AmazonEC2ContainerRegistryReadOnly` (ECR pulls); and an
-`aws_iam_instance_profile` wired to `k8s_master` and the `k8s_worker` nodes in
-ec2.tf. The bastion gets no instance profile.
+**`infra/iam.tf`** — A shared `aws_iam_policy_document` holding the EC2
+`sts:AssumeRole` trust policy, and two roles built on it, each with a matching
+`aws_iam_instance_profile`: `<var.name>-k8s-master`, wired to the `k8s_master`
+instance, and `<var.name>-k8s-node`, wired to the `k8s_worker` nodes. Both get
+the AWS-managed `AmazonEC2ContainerRegistryReadOnly`. Two customer-managed S3
+policies built from policy documents and scoped to the bucket in s3.tf:
+`<var.name>-s3-access` (on the application bucket: `s3:ListBucket`,
+`s3:GetObject` and `s3:PutObject`; on the OIDC bucket: `s3:ListBucket` and
+`s3:PutObject`) attached to the master role, and
+`<var.name>-s3-read` (`s3:ListBucket` and `s3:GetObject`) attached to the node
+role. Also `aws_iam_policy.aws_load_balancer_controller`, whose document is read
+with `file()` from the vendored JSON under policies/, attached to both roles
+(IRSA is unavailable on this self-managed cluster, so the permissions sit on the
+instance roles). The bastion gets no instance profile, and no CNI policy is
+attached to either role.
 
-**`infra/vpc_endpoints.tf`** — `aws_security_group.vpc_endpoints` with 443
-ingress from the master and worker groups; interface endpoints
-`aws_vpc_endpoint.ecr_api` and `ecr_dkr` in the private subnet with private DNS
-enabled; and the `aws_vpc_endpoint.s3` gateway endpoint attached to the private
-route table. Together these allow private-ECR image pulls without a NAT
-gateway; they do not reach registry.k8s.io, public.ecr.aws or apt repositories.
+**`infra/s3.tf`** — An `aws_caller_identity` data source and two buckets.
+`aws_s3_bucket.main`, named `<var.name>-<account id>` unless
+`var.s3_bucket_name` overrides it, with
+`aws_s3_bucket_server_side_encryption_configuration` applying SSE-S3 (`AES256`)
+by default with a bucket key enabled, and `aws_s3_bucket_public_access_block` on
+all four settings. `aws_s3_bucket.oidc`, named `<var.name>-oidc-<account id>`
+unless `var.oidc_bucket_name` overrides it, with no encryption configuration of
+its own, deliberately public for IRSA: its
+public access block keeps ACLs blocked but permits a public bucket policy, and
+`aws_s3_bucket_policy.oidc` grants anonymous `s3:GetObject` on objects only —
+no listing, no writes.
 
-**`infra/key_pairs.tf`** — `aws_key_pair.bastion_ec2` and `aws_key_pair.k8s`,
-named `<var.name>-bastion` and `<var.name>-k8s`, taking their public key
-material from the corresponding variables. Public halves only: no private key
-is handled by Terraform, so none reaches the state file.
+**`infra/vpc_endpoints.tf`** — The `aws_vpc_endpoint.s3` gateway endpoint,
+attached to the private route table, keeping the private subnet's S3 traffic off
+the NAT gateway. The ECR interface endpoints and their security group that this
+file once held were removed when the pod network moved to Flannel.
+
+**`infra/key_pairs.tf`** — A `locals` block reading the public key material
+from the `.pub` files named by `var.bastion_public_key_path` and
+`var.k8s_public_key_path` via `trimspace(file(pathexpand(trimspace(...))))`,
+plus a shared OpenSSH public-key regex; and `aws_key_pair.bastion_ec2` and
+`aws_key_pair.k8s`, named `<var.name>-bastion` and `<var.name>-k8s`, consuming
+those locals. Each carries a `lifecycle` precondition asserting the content
+matches the key regex. Reading in a local rather than inside the precondition
+keeps a bad path reporting as a file error instead of being masked by `can()`.
+Public halves only: no private key is handled by Terraform, so none reaches the
+state file.
 
 **`infra/outputs.tf`** — Outputs for `vpc_id`, `vpc_cidr_block`,
-`public_subnet_id`, `private_subnet_id`, `internet_gateway_id`, `nat_gateway_id`
-and `nat_gateway_public_ip` (both wrapped in `one()` so they return `null` while
-the NAT gateway is disabled), `public_route_table_id`, `private_route_table_id`,
+`public_subnet_id`, `private_subnet_id`, `internet_gateway_id`, `nat_gateway_id`,
+`nat_gateway_public_ip`, `public_route_table_id`, `private_route_table_id`,
 and, per instance, `bastion_instance_id`, `bastion_public_ip`,
 `bastion_private_ip`, `bastion_security_group_id`, `k8s_master_instance_id`,
 `k8s_master_private_ip`, `k8s_master_security_group_id`, the shared `ami_id`,
@@ -161,6 +203,14 @@ written file's path from the hook's stdin JSON, resolves the repo root from
 inside the repo, not gitignored, not `AI_DISCLOSURE.md`/`.claude/`/`.git/`, and
 not already named in this file — emits `hookSpecificOutput.additionalContext`
 telling Claude to catalogue it. It always exits 0: a reminder, not a gate.
+
+## Note on vendored content
+
+`infra/policies/aws-load-balancer-controller-iam-policy.json` was downloaded
+verbatim from the `kubernetes-sigs/aws-load-balancer-controller` project
+(`docs/install/iam_policy.json`) and is not AI-authored. It is listed above for
+completeness because this program placed it in the repository, but its contents
+are upstream's work under that project's license.
 
 ## Note on untracked artifacts
 

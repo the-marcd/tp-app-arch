@@ -1,8 +1,6 @@
-# Everything here is gated on var.enable_nat_gateway. With the default (false)
-# no NAT gateway, and no Elastic IP, is provisioned and nothing here bills.
+# The NAT gateway is always provisioned: it bills hourly plus per-GB from the
+# moment it exists, and it is what gives the private subnet its egress.
 resource "aws_eip" "nat" {
-  count = var.enable_nat_gateway ? 1 : 0
-
   domain = "vpc"
 
   tags = {
@@ -11,9 +9,7 @@ resource "aws_eip" "nat" {
 }
 
 resource "aws_nat_gateway" "main" {
-  count = var.enable_nat_gateway ? 1 : 0
-
-  allocation_id = aws_eip.nat[0].id
+  allocation_id = aws_eip.nat.id
   subnet_id     = aws_subnet.public.id
 
   tags = {

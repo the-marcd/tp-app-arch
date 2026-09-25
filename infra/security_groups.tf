@@ -4,12 +4,13 @@
 # the master and worker groups reference each other, which Terraform cannot
 # resolve when the rules live inside the group resources.
 #
-# Port assignments follow the port table supplied by the user. Pod-network (CNI)
-# ports are NOT included -- that table lists none -- see README.
+# Cluster port assignments follow the port table supplied by the user. The pod
+# network is Flannel with the default VXLAN backend, which adds UDP 8472 between
+# nodes -- see the Flannel section at the bottom of this file.
 
 resource "aws_security_group" "bastion_ec2" {
   name        = "${var.name}-bastion"
-  description = "Bastion: egress only, no inbound access"
+  description = "Bastion: SSH from approved addresses"
   vpc_id      = aws_vpc.main.id
 
   tags = {
@@ -63,8 +64,19 @@ resource "aws_vpc_security_group_egress_rule" "k8s_worker_all" {
 }
 
 # ---------------------------------------------------------------------------
-# Administrative SSH, bastion -> nodes.
+# Administrative SSH: operator -> bastion, then bastion -> nodes.
 # ---------------------------------------------------------------------------
+
+resource "aws_vpc_security_group_ingress_rule" "bastion_ssh" {
+  for_each = toset(var.bastion_ssh_cidrs)
+
+  security_group_id = aws_security_group.bastion_ec2.id
+  description       = "SSH from ${each.value}"
+  from_port         = 22
+  to_port           = 22
+  ip_protocol       = "tcp"
+  cidr_ipv4         = each.value
+}
 
 resource "aws_vpc_security_group_ingress_rule" "k8s_master_ssh" {
   security_group_id            = aws_security_group.k8s_master.id
@@ -183,42 +195,50 @@ resource "aws_vpc_security_group_ingress_rule" "k8s_worker_nodeport_udp" {
 }
 
 # ---------------------------------------------------------------------------
-# Pod network (AWS VPC CNI).
+# Pod network: Flannel, VXLAN backend.
 #
-# The CNI assigns pods real VPC addresses on secondary ENIs, and those ENIs
-# inherit their node's security group. Pod traffic is not encapsulated, so it
-# is evaluated against these groups on whatever port the workload uses -- which
-# is not knowable in advance. Hence all protocols, all ports, between the node
-# groups (and each group to itself, for the multi-ENI and cross-node cases).
+# Flannel encapsulates pod traffic in VXLAN, so the packets that actually cross
+# the wire are node-IP to node-IP on UDP 8472. The pod addresses live inside the
+# tunnel and are never evaluated by a security group -- which is why this needs
+# one UDP port rather than the all-protocol node-to-node allow the AWS VPC CNI
+# would have required.
 #
-# These rules subsume the narrower master<->worker rules above; those are kept
-# because they document which component needs which port.
+# Every node must reach every other node, hence both directions plus each group
+# to itself.
 # ---------------------------------------------------------------------------
 
-resource "aws_vpc_security_group_ingress_rule" "pods_master_from_workers" {
+resource "aws_vpc_security_group_ingress_rule" "flannel_master_from_workers" {
   security_group_id            = aws_security_group.k8s_master.id
-  description                  = "Pod traffic from workers (VPC CNI)"
-  ip_protocol                  = "-1"
+  description                  = "Flannel VXLAN from workers"
+  from_port                    = 8472
+  to_port                      = 8472
+  ip_protocol                  = "udp"
   referenced_security_group_id = aws_security_group.k8s_worker.id
 }
 
-resource "aws_vpc_security_group_ingress_rule" "pods_master_from_master" {
+resource "aws_vpc_security_group_ingress_rule" "flannel_master_from_master" {
   security_group_id            = aws_security_group.k8s_master.id
-  description                  = "Pod traffic within the control plane (VPC CNI)"
-  ip_protocol                  = "-1"
+  description                  = "Flannel VXLAN within the control plane"
+  from_port                    = 8472
+  to_port                      = 8472
+  ip_protocol                  = "udp"
   referenced_security_group_id = aws_security_group.k8s_master.id
 }
 
-resource "aws_vpc_security_group_ingress_rule" "pods_workers_from_master" {
+resource "aws_vpc_security_group_ingress_rule" "flannel_workers_from_master" {
   security_group_id            = aws_security_group.k8s_worker.id
-  description                  = "Pod traffic from the control plane (VPC CNI)"
-  ip_protocol                  = "-1"
+  description                  = "Flannel VXLAN from the control plane"
+  from_port                    = 8472
+  to_port                      = 8472
+  ip_protocol                  = "udp"
   referenced_security_group_id = aws_security_group.k8s_master.id
 }
 
-resource "aws_vpc_security_group_ingress_rule" "pods_workers_from_workers" {
+resource "aws_vpc_security_group_ingress_rule" "flannel_workers_from_workers" {
   security_group_id            = aws_security_group.k8s_worker.id
-  description                  = "Pod traffic between workers (VPC CNI)"
-  ip_protocol                  = "-1"
+  description                  = "Flannel VXLAN between workers"
+  from_port                    = 8472
+  to_port                      = 8472
+  ip_protocol                  = "udp"
   referenced_security_group_id = aws_security_group.k8s_worker.id
 }

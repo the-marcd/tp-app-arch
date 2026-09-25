@@ -12,41 +12,56 @@ Flat Terraform (no modules) for a single AWS VPC with one public and one private
 | `vpc.tf` | AZ lookup, locals, the VPC |
 | `subnets.tf` | Public and private subnets |
 | `internet_gateway.tf` | Internet gateway attached to the VPC |
-| `nat_gateway.tf` | Optional NAT gateway + Elastic IP (off by default) |
+| `nat_gateway.tf` | NAT gateway + Elastic IP |
 | `route_tables.tf` | Route tables, default routes, associations |
 | `ec2.tf` | Ubuntu AMI lookup, EC2 instances |
 | `security_groups.tf` | Security groups and all their rules |
-| `vpc_endpoints.tf` | ECR (api + dkr) and S3 VPC endpoints |
-| `iam.tf` | Node IAM role, VPC CNI policy, instance profile |
+| `vpc_endpoints.tf` | S3 gateway VPC endpoint |
+| `iam.tf` | IAM roles, instance profiles, S3 policies |
+| `s3.tf` | Application bucket and public OIDC bucket |
+| `policies/` | Vendored IAM policy JSON |
 | `key_pairs.tf` | SSH key pairs for the bastion and the k8s nodes |
 | `outputs.tf` | IDs of everything created |
 
 ## Addressing
 
-| Resource | CIDR |
-| --- | --- |
-| VPC | `172.31.0.0/22` (172.31.0.0 – 172.31.3.255) |
-| Public subnet | `172.31.0.0/24` |
-| Private subnet | `172.31.1.0/24` |
+| Resource | CIDR | AZ |
+| --- | --- | --- |
+| VPC | `172.31.0.0/22` (172.31.0.0 – 172.31.3.255) | — |
+| Public subnet A | `172.31.0.0/24` | first |
+| Private subnet A | `172.31.1.0/24` | first |
+| Public subnet B | `172.31.2.0/24` | second |
+| Private subnet B | `172.31.3.0/24` | second |
 
-`172.31.2.0/23` is left free for future subnets.
+The `/22` is now fully allocated.
 
-The public subnet's route table sends `0.0.0.0/0` to the internet gateway.
+Two AZs because an ALB requires subnets in at least two. The AZ-a resources keep
+the short names `aws_subnet.public` / `aws_subnet.private` so existing references
+stay valid; the AZ-b ones are `public_b` / `private_b`.
+
+Both public subnets share the public route table (`0.0.0.0/0` → internet
+gateway) and both private subnets share the private one (`0.0.0.0/0` → NAT
+gateway). The NAT gateway lives in public subnet A only, so AZ-b egress crosses
+availability zones: cross-AZ data charges, and an AZ-a failure takes out egress
+for both. A second NAT gateway and a per-AZ private route table would fix that,
+at another hourly charge.
+
+All four subnets carry the AWS Load Balancer Controller's discovery tags:
+
+| Tag | Value | On |
+| --- | --- | --- |
+| `kubernetes.io/cluster/<cluster_name>` | `shared` | all four |
+| `kubernetes.io/role/elb` | `1` | public subnets |
+| `kubernetes.io/role/internal-elb` | `1` | private subnets |
+
+`cluster_name` defaults to `var.name` and must match the controller's
+`--cluster-name` flag.
 
 ## NAT gateway
 
-The NAT gateway is written but not provisioned. It is gated behind
-`enable_nat_gateway`, which defaults to `false`:
-
-```sh
-terraform apply -var 'enable_nat_gateway=true'
-```
-
-With the flag off, neither the NAT gateway, its Elastic IP, nor the private
-default route exist, and the private subnet has no outbound internet path.
-Turning it on creates all three and costs an hourly charge plus per-GB
-processing for as long as it exists. The `nat_gateway_id` and
-`nat_gateway_public_ip` outputs are `null` while it is off.
+The NAT gateway, its Elastic IP, and the private subnet's `0.0.0.0/0` route are
+always provisioned — there is no flag. It is what gives the private subnet its
+egress, and it bills hourly plus per-GB for as long as it exists.
 
 ## Compute
 
@@ -54,9 +69,15 @@ processing for as long as it exists. The `nat_gateway_id` and
 | --- | --- | --- | --- | --- |
 | `bastion_ec2` | `t4g.nano` | arm64 (Graviton) | public | 10 GiB |
 | `k8s_master` | `t4g.medium` | arm64 (Graviton) | private | 20 GiB |
-| `k8s_worker` (×2) | `t4g.small` | arm64 (Graviton) | private | 20 GiB |
+| `k8s_worker` (×N) | `t4g.small` | arm64 (Graviton) | private | 20 GiB |
 
-The workers are a `count`ed resource sized by `k8s_worker_count` (default `2`).
+The workers are a `count`ed resource sized by `k8s_worker_count`, which
+**defaults to `0`** — an apply with no overrides brings up the bastion and the
+control plane only. Set it to bring workers up:
+
+```sh
+terraform apply -var 'k8s_worker_count=2'
+```
 
 Both run Ubuntu (`ubuntu_version`, default `26.04`) on encrypted gp3 root
 volumes. Both are Graviton, so a single arm64 lookup, `data.aws_ami.ubuntu`,
@@ -72,30 +93,53 @@ Pin
 
 Two key pairs, in `key_pairs.tf`:
 
-| Key pair | Installed on | Public key from |
+| Key pair | Installed on | Public key file from |
 | --- | --- | --- |
-| `<name>-bastion` | `bastion_ec2` | `bastion_public_key` |
-| `<name>-k8s` | `k8s_master` and every `k8s_worker` | `k8s_public_key` |
+| `<name>-bastion` | `bastion_ec2` | `bastion_public_key_path` |
+| `<name>-k8s` | `k8s_master` and every `k8s_worker` | `k8s_public_key_path` |
 
-Both variables are required and take **public** key material in
-`authorized_keys` format. Terraform never sees the private halves, so they
-cannot end up in `terraform.tfstate`. Generate them yourself:
+Both variables are required and take a **path to a `.pub` file**, not the key
+text. Terraform reads only the public half, so the private keys cannot end up
+in `terraform.tfstate`. Generate them yourself:
 
 ```sh
 ssh-keygen -t ed25519 -f ~/.ssh/tp-app-bastion -C tp-app-bastion
 ssh-keygen -t ed25519 -f ~/.ssh/tp-app-k8s     -C tp-app-k8s
 ```
 
-then pass the `.pub` contents in, e.g. in a `terraform.tfvars`:
+then point the variables at the `.pub` files, e.g. in a `terraform.tfvars`:
 
 ```hcl
-bastion_public_key = "ssh-ed25519 AAAA... tp-app-bastion"
-k8s_public_key     = "ssh-ed25519 AAAA... tp-app-k8s"
+bastion_public_key_path = "~/.ssh/tp-app-bastion.pub"
+k8s_public_key_path     = "~/.ssh/tp-app-k8s.pub"
 ```
 
-`bastion_ec2`'s group allows all egress and **no ingress** — so the keys are in
-place, but nothing can reach the bastion, and therefore nothing can reach the
-nodes through it, until an ingress rule is added.
+A leading `~` is expanded, and the trailing newline `ssh-keygen` writes is
+stripped. Any OpenSSH public key type works — `ssh-rsa`, `ssh-ed25519`,
+`ecdsa-sha2-*`, and the `sk-*@openssh.com` FIDO types.
+
+The two failure modes report separately, which matters when something is wrong:
+
+- **Path wrong or unreadable** — the `file()` call in `locals` fails with
+  Terraform's own error naming the path (`no file exists at "..."`).
+- **File is not a public key** — a `lifecycle` precondition on each key pair
+  catches it, so pointing at a *private* key fails the plan rather than sending
+  it to AWS.
+
+Quote nothing when answering an interactive variable prompt: Terraform takes
+the literal characters, so `"~/.ssh/key.pub"` with quotes becomes part of the
+path and will not resolve.
+
+`bastion_ec2`'s group accepts SSH from the CIDRs in `bastion_ssh_cidrs`
+(default `47.197.109.105/32`) and allows all egress. That is the only way into
+the environment — the k8s nodes accept SSH from the bastion's security group
+alone, so everything reaches them through the bastion.
+
+Widen or replace the list to add more operators:
+
+```hcl
+bastion_ssh_cidrs = ["47.197.109.105/32", "203.0.113.0/24"]
+```
 
 ## Cluster firewall rules
 
@@ -105,6 +149,12 @@ master and worker groups reference each other and inline rules would deadlock
 Terraform's dependency graph.
 
 Ports follow the supplied port table.
+
+**Inbound to `bastion_ec2`:**
+
+| Port | Protocol | Source | Component |
+| --- | --- | --- | --- |
+| 22 | TCP | `bastion_ssh_cidrs` | SSH |
 
 **Inbound to `k8s_master`:**
 
@@ -128,81 +178,182 @@ Ports follow the supplied port table.
 
 All three groups allow unrestricted egress.
 
-### Pod network (AWS VPC CNI)
+### Pod network: Flannel (VXLAN backend)
 
-The AWS VPC CNI assigns pods real VPC addresses on secondary ENIs, and those
-ENIs inherit their node's security group. Pod traffic is **not encapsulated**,
-so it is evaluated against these groups on whatever port the workload happens
-to use. There is no overlay port to open — instead the node groups must admit
-each other wholesale:
+| Port | Protocol | Source | Destination |
+| --- | --- | --- | --- |
+| 8472 | UDP | worker SG | master SG |
+| 8472 | UDP | master SG (self) | master SG |
+| 8472 | UDP | master SG | worker SG |
+| 8472 | UDP | worker SG (self) | worker SG |
 
-| Destination | Source | Protocol |
+Flannel encapsulates pod traffic in VXLAN, so what crosses the wire is
+node-IP to node-IP on UDP 8472. Pod addresses live inside the tunnel and are
+never evaluated by a security group — which is why one UDP port is enough,
+where the AWS VPC CNI would have needed an all-protocol node-to-node allow.
+
+Every node must reach every other node, hence both directions plus each group
+to itself.
+
+#### Matching cluster configuration
+
+- `kubeadm init --pod-network-cidr=10.244.0.0/16` (Flannel's default). It does
+  not overlap the VPC's `172.31.0.0/22`, so the overlay and the VPC can coexist.
+- These rules assume the **default VXLAN backend**. `host-gw` would need no UDP
+  port but does require disabling the EC2 source/destination check on every
+  node and is not configured here. WireGuard backend would need UDP 51820–51821
+  instead.
+- Max pods per node is no longer bounded by ENI limits — pods draw from the
+  overlay, not from VPC addresses. The 11-pod ceiling on `t4g.small` that the
+  VPC CNI imposed does not apply.
+
+## Cluster IAM
+
+`iam.tf` defines two roles, each with its own instance profile of the same
+name, both assumed by `ec2.amazonaws.com`:
+
+| Role / profile | Attached to | Policies |
 | --- | --- | --- |
-| master SG | worker SG | all |
-| master SG | master SG (self) | all |
-| worker SG | master SG | all |
-| worker SG | worker SG (self) | all |
+| `<name>-k8s-master` | `k8s_master` | `AmazonEC2ContainerRegistryReadOnly`, `<name>-s3-access` |
+| `<name>-k8s-node` | every `k8s_worker` | `AmazonEC2ContainerRegistryReadOnly`, `<name>-s3-read` |
 
-This is broad by design and is the trade-off the VPC CNI makes: any pod can
-reach any port on any node or pod in the cluster. Tightening it needs security
-groups for pods, which is an EKS-only feature and not available on a
-self-managed cluster.
+They are split so the control plane's permissions can grow — cloud-controller
+manager, EBS CSI driver, etcd backups to S3 — without widening what the workers
+hold.
 
-These rules subsume the narrower master↔worker port rules in the tables above.
-Those are kept because they record which component needs which port; delete
-them if you would rather the group read as exactly what it enforces.
+`AmazonEC2ContainerRegistryReadOnly` lets kubelet and containerd authenticate
+to ECR. Flannel's image ships from `ghcr.io`, so this matters only for images
+hosted in your own ECR registry.
 
-No Flannel/Calico/Cilium rules are present, and none are needed — those plugins
-are not in use.
+The two S3 policies differ only in write access:
 
-## Node IAM
+| Policy | Role | Bucket | Actions |
+| --- | --- | --- | --- |
+| `<name>-s3-access` | master | application | `s3:ListBucket`; `s3:GetObject`, `s3:PutObject` |
+| `<name>-s3-access` | master | OIDC | `s3:ListBucket`; `s3:PutObject` |
+| `<name>-s3-read` | workers | application | `s3:ListBucket`; `s3:GetObject` |
 
-`iam.tf` defines one role, `<name>-k8s-node`, assumed by EC2 and attached to
-`k8s_master` and both `k8s_worker` nodes through the `<name>-k8s-node` instance
-profile. The bastion deliberately gets no profile — it is not a cluster node.
+Every statement is scoped to a named bucket — `ListBucket` on the bucket ARN,
+object actions on `<arn>/*`. The master's OIDC grant is write-only by design:
+it publishes the discovery documents, and reading them back is what the public
+bucket policy is for.
 
-Two AWS-managed policies:
+`AmazonEKS_CNI_Policy` is no longer attached anywhere. It existed for the AWS
+VPC CNI's ipamd; Flannel makes no EC2 API calls, so nothing needs permission to
+create or delete network interfaces.
 
-- **`AmazonEKS_CNI_Policy`** — the ENI create/attach/detach/address permissions
-  ipamd needs.
-- **`AmazonEC2ContainerRegistryReadOnly`** — so kubelet and containerd can
-  authenticate to ECR and actually pull through the endpoints below. Without it
-  the endpoints resolve but every pull is denied.
+The bastion deliberately gets no instance profile — it is not a cluster node.
 
-## VPC endpoints
+## AWS Load Balancer Controller
 
-`vpc_endpoints.tf` gives the private subnet a path to ECR without a NAT
-gateway:
+The Terraform side is in place: two AZs, the discovery tags above, and the
+upstream IAM policy attached to both cluster roles.
 
-| Endpoint | Type | Attached to |
+`policies/aws-load-balancer-controller-iam-policy.json` is vendored verbatim
+from `kubernetes-sigs/aws-load-balancer-controller`
+(`docs/install/iam_policy.json`) — 16 statements, 80 actions across `ec2`,
+`elasticloadbalancing`, `acm`, `iam`, `cognito-idp`, `shield`, `waf-regional`
+and `wafv2`. There is no AWS-managed equivalent. **Re-download it when you
+upgrade the controller**; new releases add actions.
+
+It is attached to `<name>-k8s-master` and `<name>-k8s-node` because IRSA needs
+an OIDC provider this self-managed cluster does not have, and EKS Pod Identity
+is unavailable outside EKS ("Kubernetes clusters that you create and run on
+Amazon EC2" are explicitly excluded upstream).
+
+The IMDS lockdown below limits the fallout, but it is not equivalent to IRSA:
+anything running `hostNetwork: true` still reaches the instance role. Scoping
+these permissions to a single service account means standing up IRSA — apiserver
+issuer flags, a public OIDC discovery document, an IAM OIDC provider, and the
+`amazon-eks-pod-identity-webhook`.
+
+### IMDS lockdown
+
+All three instances set `metadata_options`:
+
+| Setting | Value | Why |
 | --- | --- | --- |
-| `com.amazonaws.<region>.ecr.api` | Interface | private subnet |
-| `com.amazonaws.<region>.ecr.dkr` | Interface | private subnet |
-| `com.amazonaws.<region>.s3` | Gateway | private route table |
+| `http_tokens` | `required` | IMDSv2 only; blocks the SSRF-style v1 GET |
+| `http_put_response_hop_limit` | `var.imds_hop_limit` (default `1`) | pod traffic crosses the Flannel bridge to reach `169.254.169.254`, so one hop too many — pods cannot read instance-role credentials |
+| `http_endpoint` | `enabled` | the node itself still needs IMDS |
+| `instance_metadata_tags` | `enabled` | instance tags readable from IMDS |
 
-All three are needed for an ECR pull: the two interface endpoints for the
-registry API and the Docker registry protocol, and S3 because ECR stores image
-layers there. The interface endpoints sit behind their own security group,
-which allows 443 from the master and worker groups only.
+**Consequence:** any pod that genuinely needs the instance role must run with
+`hostNetwork: true` — the AWS Load Balancer Controller among them. If a
+workload starts failing with credential or metadata timeouts, this is why;
+raise `imds_hop_limit` to `2` to undo it.
 
-The two interface endpoints bill hourly per AZ plus per-GB; the S3 gateway
-endpoint is free.
+### Still required, outside Terraform
 
-### What the endpoints do *not* cover
+- **`providerID` on every Node.** Instance-mode target registration resolves
+  nodes to EC2 instance IDs through it, and kubeadm leaves it unset without a
+  cloud provider. This means running the AWS cloud-controller-manager:
+  `--cloud-provider=external` on the kubelets and control plane, plus its own
+  IAM policy.
+- **`target-type: instance`, not `ip`.** Flannel's pods sit at `10.244.0.0/16`
+  inside a VXLAN tunnel; the controller's docs require pods to hold VPC subnet
+  IPs for IP targets. Traffic therefore goes ALB → NodePort → kube-proxy → pod.
+  Use `externalTrafficPolicy: Local` if you need client IPs.
+- **cert-manager**, if installing from YAML manifests. The Helm chart handles
+  the webhook certificates itself.
+- **Controller flags:** `--cluster-name` (matching `cluster_name`), plus
+  `--aws-vpc-id` and `--aws-region` unless you rely on IMDSv2.
+- **Consider `--disable-restricted-sg-rules`.** The controller expects to mutate
+  node security groups; Terraform owns them here, and the existing NodePort rule
+  (30000–32767 from the VPC CIDR) already admits ALB traffic.
 
-They reach **private ECR only** — e.g. the EKS-hosted VPC CNI image at
-`602401143452.dkr.ecr.<region>.amazonaws.com`. Still unreachable from the
-private subnet while `enable_nat_gateway` is `false`:
+## S3 buckets
 
-- `registry.k8s.io` — the kube-apiserver, etcd, CoreDNS and kube-proxy images
-  that `kubeadm init` pulls
-- `pkgs.k8s.io` and the Ubuntu archives — the `kubeadm`, `kubelet`, `kubectl`
-  and `containerd` packages
-- `public.ecr.aws`, Docker Hub, and everything else
+`s3.tf` creates one bucket, named `<name>-<account id>` unless you set
+`s3_bucket_name` (bucket names are globally unique, hence the account suffix).
 
-So these endpoints are sufficient for the VPC CNI image but **not** sufficient
-to build the cluster. Either turn on `enable_nat_gateway` for the build, or
-mirror the upstream images into your own ECR registry first.
+- **SSE-S3** (`AES256`) applied by default to every object, with an S3 Bucket
+  Key enabled to cut per-object encryption calls.
+- **Public access blocked** on all four settings. Not requested, but the bucket
+  is private by intent and this stops a stray ACL or bucket policy from opening
+  it. Remove the `aws_s3_bucket_public_access_block` if you need public objects.
+
+No versioning, lifecycle rules or access logging are configured.
+
+### OIDC bucket — public by design
+
+A second bucket, `<name>-oidc-<account id>` (override with `oidc_bucket_name`),
+holds the cluster's OpenID discovery document and JWKS for IRSA. AWS STS fetches
+these anonymously, so the bucket **must** be publicly readable.
+
+What "public" means here, precisely:
+
+| | |
+| --- | --- |
+| Granted to `*` | `s3:GetObject` on `<arn>/*` only |
+| Not granted | `s3:ListBucket` — the bucket cannot be enumerated |
+| Not granted | any write action |
+| ACLs | still blocked (`block_public_acls`, `ignore_public_acls`) |
+| Bucket policy | permitted (`block_public_policy = false`, `restrict_public_buckets = false`) |
+
+Only a bucket policy can open this bucket, and it opens exactly one action.
+Both documents are public by nature — a JWKS contains public keys.
+
+No `aws_s3_bucket_server_side_encryption_configuration` is declared for this
+bucket, unlike the application bucket. S3 still applies its account-level
+default (SSE-S3) to objects at rest; dropping the explicit block just means
+Terraform does not manage the setting.
+
+The `oidc_issuer_url` output gives the value for the kube-apiserver's
+`--service-account-issuer` flag and the IAM OIDC provider URL.
+
+## VPC endpoint
+
+One gateway endpoint, `com.amazonaws.<region>.s3`, attached to the private route
+table. Gateway endpoints have no ENI, no security group and no hourly charge;
+they keep the private subnet's S3 traffic — including the control plane writing
+discovery documents to the OIDC bucket — off the NAT gateway's per-GB billing.
+
+The ECR interface endpoints (`ecr.api`, `ecr.dkr`) and their security group were
+removed. They were added for the AWS VPC CNI, whose image lives in ECR; with
+Flannel nothing in this build pulls from ECR, and they billed hourly per AZ
+regardless. Everything the cluster pulls — `registry.k8s.io`, `ghcr.io`,
+`pkgs.k8s.io`, the Ubuntu archives — goes out through the NAT gateway.
 
 ## Usage
 

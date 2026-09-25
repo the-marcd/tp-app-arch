@@ -30,6 +30,16 @@ resource "aws_instance" "bastion_ec2" {
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.bastion_ec2.id]
 
+  # IMDSv2 only, and a hop limit of 1 so pod traffic -- which crosses the
+  # Flannel bridge to reach 169.254.169.254 -- cannot read the instance role's
+  # credentials. Workloads that legitimately need them run hostNetwork: true.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = var.imds_hop_limit
+    instance_metadata_tags      = "enabled"
+  }
+
   root_block_device {
     volume_size           = var.bastion_root_volume_size
     volume_type           = "gp3"
@@ -50,9 +60,19 @@ resource "aws_instance" "k8s_master" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.k8s_master_instance_type
   key_name               = aws_key_pair.k8s.key_name
-  iam_instance_profile   = aws_iam_instance_profile.node.name
+  iam_instance_profile   = aws_iam_instance_profile.k8s_master.name
   subnet_id              = aws_subnet.private.id
   vpc_security_group_ids = [aws_security_group.k8s_master.id]
+
+  # IMDSv2 only, and a hop limit of 1 so pod traffic -- which crosses the
+  # Flannel bridge to reach 169.254.169.254 -- cannot read the instance role's
+  # credentials. Workloads that legitimately need them run hostNetwork: true.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = var.imds_hop_limit
+    instance_metadata_tags      = "enabled"
+  }
 
   root_block_device {
     volume_size           = var.k8s_master_root_volume_size
@@ -79,6 +99,16 @@ resource "aws_instance" "k8s_worker" {
   iam_instance_profile   = aws_iam_instance_profile.node.name
   subnet_id              = aws_subnet.private.id
   vpc_security_group_ids = [aws_security_group.k8s_worker.id]
+
+  # IMDSv2 only, and a hop limit of 1 so pod traffic -- which crosses the
+  # Flannel bridge to reach 169.254.169.254 -- cannot read the instance role's
+  # credentials. Workloads that legitimately need them run hostNetwork: true.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = var.imds_hop_limit
+    instance_metadata_tags      = "enabled"
+  }
 
   root_block_device {
     volume_size           = var.k8s_worker_root_volume_size

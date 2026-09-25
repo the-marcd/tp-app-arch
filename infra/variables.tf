@@ -40,21 +40,59 @@ variable "private_subnet_az" {
   default     = null
 }
 
+variable "public_subnet_b_cidr" {
+  description = "CIDR block for the second public subnet, in a different AZ. Must sit inside var.vpc_cidr."
+  type        = string
+  default     = "172.31.2.0/24"
+}
+
+variable "private_subnet_b_cidr" {
+  description = "CIDR block for the second private subnet, in a different AZ. Must sit inside var.vpc_cidr."
+  type        = string
+  default     = "172.31.3.0/24"
+}
+
+variable "public_subnet_b_az" {
+  description = "Availability zone for the second public subnet. Defaults to the second AZ in the region when null."
+  type        = string
+  default     = null
+}
+
+variable "private_subnet_b_az" {
+  description = "Availability zone for the second private subnet. Defaults to the second AZ in the region when null."
+  type        = string
+  default     = null
+}
+
+variable "cluster_name" {
+  description = <<-EOT
+    Kubernetes cluster name, used in the kubernetes.io/cluster/<name> subnet tag
+    the AWS Load Balancer Controller discovers subnets by. Must match the
+    controller's --cluster-name flag. Defaults to var.name when null.
+  EOT
+  type        = string
+  default     = null
+}
+
 variable "map_public_ip_on_launch" {
   description = "Auto-assign public IPv4 addresses to instances launched in the public subnet."
   type        = bool
   default     = true
 }
 
-variable "enable_nat_gateway" {
+variable "bastion_ssh_cidrs" {
   description = <<-EOT
-    Provision a NAT gateway (plus its Elastic IP) in the public subnet and route
-    the private subnet's 0.0.0.0/0 through it. Off by default: a NAT gateway
-    bills hourly plus per-GB as soon as it exists, so flip this only when the
-    private subnet actually needs outbound internet access.
+    Source CIDRs allowed to SSH to the bastion. This is the only way into the
+    environment: the k8s nodes accept SSH from the bastion's security group
+    alone.
   EOT
-  type        = bool
-  default     = false
+  type        = list(string)
+  default     = ["47.197.109.105/32"]
+
+  validation {
+    condition     = alltrue([for c in var.bastion_ssh_cidrs : can(cidrnetmask(c))])
+    error_message = "Every entry in bastion_ssh_cidrs must be a valid IPv4 CIDR, e.g. \"203.0.113.4/32\"."
+  }
 }
 
 variable "ubuntu_version" {
@@ -94,9 +132,18 @@ variable "k8s_master_root_volume_size" {
 }
 
 variable "k8s_worker_count" {
-  description = "Number of k8s worker nodes in the private subnet."
+  description = <<-EOT
+    Number of k8s worker nodes in the private subnet. Defaults to 0, so no
+    workers are provisioned until this is set; the bastion and the control
+    plane stand up without them.
+  EOT
   type        = number
-  default     = 2
+  default     = 0
+
+  validation {
+    condition     = var.k8s_worker_count >= 0
+    error_message = "k8s_worker_count cannot be negative."
+  }
 }
 
 variable "k8s_worker_instance_type" {
@@ -114,31 +161,56 @@ variable "k8s_worker_root_volume_size" {
   default     = 20
 }
 
-variable "bastion_public_key" {
+variable "bastion_public_key_path" {
   description = <<-EOT
-    SSH public key for the bastion, in authorized_keys format (the contents of
-    an id_ed25519.pub or similar). Only the public half: the private key is
-    never handled by Terraform.
+    Path to the bastion's SSH public key file (an id_ed25519.pub or similar).
+    A leading ~ is expanded. Only the public half is read: the private key is
+    never handled by Terraform, so it cannot reach the state file.
   EOT
   type        = string
+}
+
+variable "k8s_public_key_path" {
+  description = <<-EOT
+    Path to the SSH public key file installed on every k8s_* node. A leading ~
+    is expanded. Public half only, as above.
+  EOT
+  type        = string
+}
+
+variable "s3_bucket_name" {
+  description = <<-EOT
+    Name for the application S3 bucket. Leave null to derive it as
+    "<name>-<account id>", since bucket names are globally unique.
+  EOT
+  type        = string
+  default     = null
+}
+
+variable "imds_hop_limit" {
+  description = <<-EOT
+    IMDS PUT response hop limit. 1 keeps instance-role credentials out of reach
+    of pods, whose traffic to 169.254.169.254 crosses the Flannel bridge and so
+    costs an extra hop; anything needing those credentials must run
+    hostNetwork: true. Raise to 2 if that proves too strict.
+  EOT
+  type        = number
+  default     = 1
 
   validation {
-    condition     = can(regex("^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp[0-9]+) ", var.bastion_public_key))
-    error_message = "bastion_public_key must be an OpenSSH public key, e.g. \"ssh-ed25519 AAAA... comment\"."
+    condition     = var.imds_hop_limit >= 1 && var.imds_hop_limit <= 64
+    error_message = "imds_hop_limit must be between 1 and 64."
   }
 }
 
-variable "k8s_public_key" {
+variable "oidc_bucket_name" {
   description = <<-EOT
-    SSH public key installed on every k8s_* node, in authorized_keys format.
-    Only the public half: the private key is never handled by Terraform.
+    Name for the public OIDC discovery bucket used by IRSA. Leave null to derive
+    it as "<name>-oidc-<account id>". This bucket is publicly readable by
+    design -- AWS STS fetches the discovery document anonymously.
   EOT
   type        = string
-
-  validation {
-    condition     = can(regex("^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp[0-9]+) ", var.k8s_public_key))
-    error_message = "k8s_public_key must be an OpenSSH public key, e.g. \"ssh-ed25519 AAAA... comment\"."
-  }
+  default     = null
 }
 
 variable "tags" {
