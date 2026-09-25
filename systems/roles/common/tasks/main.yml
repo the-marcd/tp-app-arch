@@ -47,6 +47,7 @@
 
 - name: Set up containerd cgroup config
   ansible.builtin.copy:
+   remote_src: true
    src: files/containerd-config.toml
    dest: /etc/containerd/config.toml
    owner: root

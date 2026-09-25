@@ -9,6 +9,7 @@
 
 - name: Set up kubeadm config file
   ansible.builtin.copy:
+   remote_src: true
    src: files/kubeadm-config.yaml
    dest: /tmp/kubeadm-config.yaml
 
