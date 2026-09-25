@@ -122,6 +122,13 @@ resource "aws_vpc_security_group_egress_rule" "k8s_worker_to_load_balancer" {
   referenced_security_group_id = aws_security_group.load_balancer.id
 }
 
+resource "aws_vpc_security_group_ingress_rule" "k8s_worker_to_load_balancer" {
+  security_group_id            = aws_security_group.k8s_worker.id
+  description                  = "All traffic from the load balancer to worker nodes"
+  ip_protocol                  = "-1"
+  referenced_security_group_id = aws_security_group.load_balancer.id
+}
+
 # ---------------------------------------------------------------------------
 # Administrative access: operator -> bastion on SSH, then bastion -> nodes on
 # anything.
