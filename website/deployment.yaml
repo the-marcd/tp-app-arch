@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: site
+  namespace: website
+  labels:
+    app: site
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: site
+  template:
+    metadata:
+      labels:
+        app: site
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - name: https
+              containerPort: 443
+          volumeMounts:
+            # Replaces the image's default.conf, so only site.conf is loaded.
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+            - name: html
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+            # tls.crt and tls.key, written by cert-manager.
+            - name: tls
+              mountPath: /etc/nginx/tls
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: site-nginx-conf
+        - name: html
+          configMap:
+            name: site-html
+        # Does not exist until the Certificate is issued; pods wait for it.
+        - name: tls
+          secret:
+            secretName: site-tls

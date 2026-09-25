@@ -1,0 +1,41 @@
+# Network Load Balancer fronting the site, provisioned by the AWS Load Balancer
+# Controller from these annotations.
+#
+# Only 443 is exposed. The load balancer security group admits HTTPS from
+# anywhere and nothing else, so a port 80 listener would exist and be
+# unreachable.
+apiVersion: v1
+kind: Service
+metadata:
+  name: site
+  namespace: website
+  annotations:
+    # "external" hands this Service to the AWS Load Balancer Controller, which
+    # provisions an NLB. Without it the in-tree legacy provider would try, and
+    # there is no cloud provider configured on this cluster.
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+
+    # instance, not ip. Flannel gives pods overlay addresses that are not
+    # routable from the VPC, so the load balancer must target NodePorts on the
+    # nodes. This is why every node needs spec.providerID set -- the controller
+    # resolves a Node to an EC2 instance through it.
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "instance"
+
+    # The group from infra/security_groups.tf. Referenced by its Name tag rather
+    # than its id, since the annotation accepts either and the tag is stable
+    # across rebuilds. Supplying a group also stops the controller managing
+    # worker security group rules itself -- see README.
+    service.beta.kubernetes.io/aws-load-balancer-security-groups: "tp-app-load-balancer"
+
+    # external-dns creates the record in the tp.darcsaint.net zone.
+    external-dns.alpha.kubernetes.io/hostname: "site.tp.darcsaint.net"
+spec:
+  type: LoadBalancer
+  selector:
+    app: site
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP

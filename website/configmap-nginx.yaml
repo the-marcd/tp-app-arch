@@ -1,0 +1,32 @@
+# Mounted over /etc/nginx/conf.d, which replaces the image's default.conf --
+# so this is the only server block nginx loads.
+#
+# TLS terminates here, not at the load balancer. An NLB is layer 4 and can only
+# serve a certificate from ACM; a cert-manager certificate lands in a Kubernetes
+# Secret, which only a pod can read. So the NLB forwards TCP 443 untouched and
+# nginx does the handshake.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: site-nginx-conf
+  namespace: website
+data:
+  site.conf: |
+    server {
+        listen 443 ssl;
+        server_name site.tp.darcsaint.net;
+
+        # Written by cert-manager into the Secret named by certificate.yaml.
+        ssl_certificate     /etc/nginx/tls/tls.crt;
+        ssl_certificate_key /etc/nginx/tls/tls.key;
+
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        ssl_prefer_server_ciphers off;
+
+        root  /usr/share/nginx/html;
+        index index.html;
+
+        location / {
+            try_files $uri $uri/ =404;
+        }
+    }

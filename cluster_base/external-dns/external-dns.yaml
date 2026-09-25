@@ -1,0 +1,143 @@
+# external-dns, wired for IRSA without the EKS pod identity webhook.
+#
+# Unlike cert-manager and the load balancer controller, external-dns publishes
+# no single release manifest to patch -- upstream documents a YAML to copy. So
+# this is a hand-written manifest rather than a kustomize overlay, and it needs
+# reviewing against upstream on a version bump rather than just changing a tag.
+#
+# RBAC rules are the ones the upstream Helm chart generates for the service and
+# ingress sources.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: external-dns
+  namespace: kube-system
+  annotations:
+    # Inert outside EKS -- nothing reads it without the webhook. Kept so the
+    # role association is discoverable from the cluster.
+    eks.amazonaws.com/role-arn: arn:aws:iam::757743287485:role/tp-app-external-dns
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: external-dns
+rules:
+  # service source
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list"]
+  # Needed to resolve NodePort services to node addresses.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "watch"]
+  # ingress source
+  - apiGroups: ["networking.k8s.io", "extensions"]
+    resources: ["ingresses"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: external-dns-viewer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: external-dns
+subjects:
+  - kind: ServiceAccount
+    name: external-dns
+    namespace: kube-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: external-dns
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: external-dns
+spec:
+  # One replica only. Two instances with the same --txt-owner-id race each other
+  # over the same records.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-dns
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: external-dns
+    spec:
+      serviceAccountName: external-dns
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: external-dns
+          image: registry.k8s.io/external-dns/external-dns:v0.23.0
+          args:
+            - --source=service
+            - --source=ingress
+            - --provider=aws
+            - --aws-zone-type=public
+            # Scoped to the one zone the IRSA role can write to. Without this
+            # external-dns would list every zone in the account and log
+            # permission errors on the rest.
+            - --domain-filter=tp.darcsaint.net
+            # The TXT registry records ownership alongside each managed record.
+            # With it, --policy=sync only deletes records carrying this owner id,
+            # so anything else in the zone is left alone. Change to
+            # --policy=upsert-only to never delete, at the cost of stale records
+            # surviving the Services that created them.
+            - --registry=txt
+            - --txt-owner-id=tp-app
+            - --policy=sync
+            - --log-level=info
+          env:
+            # IRSA by hand. The EKS pod identity webhook would inject these; no
+            # webhook runs here, so the projected token below plus these two
+            # variables are what the AWS SDK's default credential chain finds.
+            - name: AWS_ROLE_ARN
+              value: arn:aws:iam::757743287485:role/tp-app-external-dns
+            - name: AWS_WEB_IDENTITY_TOKEN_FILE
+              value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_DEFAULT_REGION
+              value: us-east-1
+            - name: AWS_STS_REGIONAL_ENDPOINTS
+              value: regional
+          volumeMounts:
+            - name: aws-iam-token
+              mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: aws-iam-token
+          projected:
+            # 0644, so the 65534 user can read it.
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  audience: sts.amazonaws.com
+                  expirationSeconds: 86400
+                  path: token

@@ -1,60 +1,31 @@
-# Namespaced Role for the website namespace.
+# Full control of the website namespace, for the user created by
+# user_setup/create-user-csr.sh.
 #
-# Verb sets:
-#   create, get, list, watch, update, patch   -- create/read/update, no removal
-#   + delete, deletecollection                -- full CRUD
+# Wildcards on all three axes: any API group, any resource, any verb -- but
+# namespaced, so it stops at the website namespace boundary. Cluster-scoped
+# objects (Nodes, PersistentVolumes, CRDs, the Namespace itself) are untouched,
+# because a Role cannot grant access to them however broad its rules.
 #
-# "read" is three verbs, not one: get fetches a named object, list enumerates
-# them, and watch streams changes. kubectl get needs list, and most controllers
-# and informers need watch, so dropping either breaks ordinary use.
+# Two things this does include, worth knowing:
+#   - Secrets in this namespace, including the TLS key cert-manager writes.
+#   - RoleBindings in this namespace. RBAC's escalation check stops the holder
+#     granting more than they have, so this cannot be used to reach outside the
+#     namespace -- but they can hand namespace-level access to others.
 #
-# Removal is likewise two verbs. Omitting delete but leaving deletecollection
-# would still permit `kubectl delete --all`, so both are withheld from the
-# create/read/update resources.
+# The built-in "admin" ClusterRole is the conventional alternative, bound with a
+# RoleBinding. It is slightly narrower: it withholds ResourceQuota and the
+# Namespace object, and it does not cover CRDs added after it was defined. Swap
+# to it by setting roleRef.kind to ClusterRole and name to admin in
+# website-rolebinding.yaml, and deleting this file.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: website-editor
   namespace: website
 rules:
-  # Deployments live in the apps API group, not core.
   - apiGroups:
-      - apps
+      - "*"
     resources:
-      - deployments
+      - "*"
     verbs:
-      - create
-      - get
-      - list
-      - watch
-      - update
-      - patch
-
-  # configmaps and services are core resources: apiGroups is the empty string.
-  - apiGroups:
-      - ""
-    resources:
-      - configmaps
-      - services
-    verbs:
-      - create
-      - get
-      - list
-      - watch
-      - update
-      - patch
-
-  # Pods get the same set plus deletion.
-  - apiGroups:
-      - ""
-    resources:
-      - pods
-    verbs:
-      - create
-      - get
-      - list
-      - watch
-      - update
-      - patch
-      - delete
-      - deletecollection
+      - "*"

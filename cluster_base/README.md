@@ -76,6 +76,10 @@ kubectl apply -f cluster_base/cert-manager/clusterissuer-letsencrypt.yaml
 # 3. load balancer controller
 kubectl apply -k cluster_base/aws-load-balancer-controller
 kubectl -n kube-system rollout status deploy/aws-load-balancer-controller
+
+# 4. external-dns
+kubectl apply -k cluster_base/external-dns
+kubectl -n kube-system rollout status deploy/external-dns
 ```
 
 ## Verifying IRSA actually works
@@ -93,12 +97,38 @@ kubectl -n cert-manager logs deploy/cert-manager | grep -i 'credential\|assume\|
 A `WebIdentityErr` or `InvalidIdentityToken` means the OIDC discovery documents
 in the bucket do not match what the API server is issuing.
 
+## external-dns
+
+`external-dns/` is a **hand-written manifest**, not an overlay over a remote
+base — external-dns publishes no release YAML to patch. A version bump means
+reviewing it against upstream, not just changing a tag. The RBAC rules are the
+ones the upstream Helm chart generates for the `service` and `ingress` sources.
+
+It carries the same IRSA wiring as the other two: projected token,
+`AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`, region variables.
+
+Three settings worth understanding before it touches your zone:
+
+| Flag | |
+| --- | --- |
+| `--domain-filter=tp.darcsaint.net` | scopes it to the one zone the IRSA role can write; without it external-dns lists every zone in the account and logs permission errors on the rest |
+| `--registry=txt` + `--txt-owner-id=tp-app` | records ownership beside each managed record |
+| `--policy=sync` | deletes records when their Service goes away — but only ones carrying that owner id, so nothing else in the zone is at risk |
+
+`--policy=upsert-only` never deletes, at the cost of stale records outliving the
+Services that created them. It is the safer-sounding option but leaves records
+pointing at dead load balancers.
+
+Only one replica, with `strategy: Recreate`. Two instances sharing a
+`--txt-owner-id` race each other over the same records.
+
 ## Pinned versions
 
 | Component | Version |
 | --- | --- |
 | cert-manager | `v1.21.2` |
 | AWS Load Balancer Controller | `v3.5.0` |
+| external-dns | `v0.23.0` |
 
 Bump deliberately. These patches target resources by name, and upstream renaming
 a Deployment or a container makes a strategic-merge patch a **silent no-op**

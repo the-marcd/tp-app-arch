@@ -16,6 +16,12 @@ than claiming the whole file.
 | `cluster_base/website-namespace.yaml` | All content. |
 | `cluster_base/website-role.yaml` | All content. |
 | `cluster_base/website-rolebinding.yaml` | All content. |
+| `website/README.md` | All content. |
+| `website/configmap-html.yaml` | All content. |
+| `website/configmap-nginx.yaml` | All content. |
+| `website/certificate.yaml` | All content. |
+| `website/deployment.yaml` | All content. |
+| `website/service.yaml` | All content. |
 | `user_setup/create-user-csr.sh` | All content. |
 | `user_setup/make-kubeconfig.sh` | All content. |
 | `user_setup/README.md` | All content. |
@@ -24,6 +30,8 @@ than claiming the whole file.
 | `cluster_base/cert-manager/clusterissuer-letsencrypt.yaml` | All content. |
 | `cluster_base/aws-load-balancer-controller/kustomization.yaml` | All content. |
 | `cluster_base/aws-load-balancer-controller/irsa-and-flags-patch.yaml` | All content. |
+| `cluster_base/external-dns/external-dns.yaml` | All content. |
+| `cluster_base/external-dns/kustomization.yaml` | All content. |
 | `systems/roles/k8smaster/files/kubeadm-config.yaml` | All content. |
 | `systems/roles/k8smaster/files/containerd-config.toml` | All content (replacing a user-authored file). |
 | `systems/roles/k8smaster/tasks/main.yml` | Partial: specific task edits only, described below. |
@@ -89,13 +97,29 @@ ambient credentials cert-manager applies to ClusterIssuers by default.
 **`cluster_base/aws-load-balancer-controller/kustomization.yaml`** — Remote base
 on AWS Load Balancer Controller `v3.5.0` plus the patch below.
 
+**`cluster_base/external-dns/external-dns.yaml`** — A hand-written manifest,
+since external-dns ships no release YAML to patch: a `ServiceAccount` in
+`kube-system` with the (inert, off EKS) role-arn annotation, a `ClusterRole`
+carrying the rules the upstream Helm chart generates for the `service` and
+`ingress` sources, a `ClusterRoleBinding`, and a single-replica `Deployment`
+pinned to `v0.23.0`. The Deployment carries the same hand-rolled IRSA wiring as
+the other two components — projected `serviceAccountToken` with audience
+`sts.amazonaws.com`, `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE` and the
+region variables — plus `--domain-filter` scoping it to `tp.darcsaint.net`, a
+TXT registry with owner id `tp-app`, `--policy=sync`, and a non-root read-only
+security context.
+
+**`cluster_base/external-dns/kustomization.yaml`** — Lists that local manifest,
+so the directory applies the same way as its siblings.
+
 **`cluster_base/website-namespace.yaml`** — A single `Namespace` named
 `website`.
 
 **`cluster_base/website-role.yaml`** — A namespaced `Role`, `website-editor`, in
-that namespace. Three rules: `create`/`get`/`list`/`watch`/`update`/`patch` on
-`apps` deployments; the same verbs on core configmaps and services; and those
-plus `delete` and `deletecollection` on core pods.
+that namespace, granting wildcard apiGroups, resources and verbs — full control
+of the namespace, bounded by the fact that a Role cannot reach cluster-scoped
+objects. It began as a narrower create/read/update rule set and was widened at
+the user's request.
 
 **`cluster_base/website-rolebinding.yaml`** — A `RoleBinding` in the `website`
 namespace tying that Role to a single `User` subject. The subject name ships as
@@ -107,6 +131,38 @@ same IRSA additions applied to the `controller` container of the
 `aws-load-balancer-controller` Deployment in `kube-system`, and a wholesale
 replacement of its `args` with `--cluster-name`, `--ingress-class`,
 `--aws-vpc-id` and `--aws-region`, the latter two being required off EKS.
+
+### `website/`
+
+Manifests for a static site: nginx serving an HTML page from a ConfigMap, behind
+a Network Load Balancer, over a cert-manager-issued Let's Encrypt certificate.
+
+**`website/README.md`** — Why TLS terminates in the pod rather than at the load
+balancer (an NLB is layer 4 and can only serve an ACM certificate, while a
+cert-manager certificate lands in a Secret only a pod can read), the apply order
+and why pods wait on the certificate, the staging-to-production switch, the
+dependency list, and verification commands.
+
+**`website/configmap-html.yaml`** — A `ConfigMap` holding a single `index.html`.
+
+**`website/configmap-nginx.yaml`** — A `ConfigMap` holding `site.conf`, an nginx
+server block listening on 443 with the cert-manager certificate paths, mounted
+over `/etc/nginx/conf.d` so it replaces the image's default.
+
+**`website/certificate.yaml`** — A `cert-manager.io/v1` `Certificate` for
+`site.tp.darcsaint.net` issued into the `site-tls` Secret by the
+`letsencrypt-staging` ClusterIssuer, with an ECDSA P-256 key and
+`rotationPolicy: Always`.
+
+**`website/deployment.yaml`** — An nginx `Deployment`, 2 replicas, pinned to
+`nginx:1.27-alpine`, mounting the two ConfigMaps and the TLS Secret, with HTTPS
+readiness and liveness probes and modest resource requests.
+
+**`website/service.yaml`** — A `type: LoadBalancer` `Service` exposing 443 only,
+annotated for the AWS Load Balancer Controller (`aws-load-balancer-type:
+external`, `scheme: internet-facing`, `nlb-target-type: instance`, and
+`security-groups` naming the `tp-app-load-balancer` group by its Name tag) and
+for external-dns (`hostname: site.tp.darcsaint.net`).
 
 ### `user_setup/`
 

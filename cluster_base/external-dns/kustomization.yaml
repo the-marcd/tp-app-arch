@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# A local manifest, not a remote base: external-dns publishes no release YAML to
+# patch. The kustomization exists only so this directory applies the same way as
+# its siblings -- kubectl apply -k cluster_base/external-dns
+resources:
+  - external-dns.yaml
