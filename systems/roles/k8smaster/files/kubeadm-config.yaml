@@ -1,0 +1,79 @@
+# kubeadm configuration for the tp-app cluster.
+#
+#   kubeadm init --config=kubeadm-config.yaml
+#
+# GVK: kubeadm.k8s.io/v1beta4 — current and not deprecated as of writing.
+#   - v1beta3 has been REMOVED upstream; its string/string extraArgs maps do not
+#     parse here. extraArgs is a list of {name, value} entries in v1beta4.
+#   - kubeadm.k8s.io/v1 exists upstream but is NOT yet released: its migration
+#     note still reads "kubeadm TODO and newer" (kubeadm issue 3160). Its schema
+#     is otherwise identical to v1beta4 apart from an added Arg.mergeMethod
+#     field, so switching later is a one-line change.
+#
+# Confirm against your own binary before applying:
+#   kubeadm version
+#   kubeadm config print init-defaults    # the apiVersion it emits is preferred
+#   kubeadm config migrate --old-config kubeadm-config.yaml   # if it wants v1
+#
+# The service-account-issuer value is the oidc_issuer_url output from infra/.
+# Set it at init: changing it on a running cluster changes the iss claim on new
+# tokens and invalidates existing ones.
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  criSocket: unix:///var/run/containerd/containerd.sock
+  # Required before the AWS Load Balancer Controller can register instance
+  # targets: it resolves nodes to EC2 instance IDs through the Node's
+  # providerID, which stays empty without a cloud provider. Enabling this also
+  # means deploying the AWS cloud-controller-manager, and nodes stay tainted
+  # node.cloudprovider.kubernetes.io/uninitialized until it runs.
+  # kubeletExtraArgs:
+  #   - name: cloud-provider
+  #     value: external
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: tp-app
+
+networking:
+  # Flannel's default. Does not overlap the VPC's 172.31.0.0/22, so the overlay
+  # and the VPC coexist. Replaces the --pod-network-cidr flag.
+  podSubnet: 10.244.0.0/16
+
+apiServer:
+  extraArgs:
+    # IRSA: the OIDC discovery document and JWKS are published to this bucket,
+    # which is publicly readable so AWS STS can fetch them unauthenticated.
+    - name: service-account-issuer
+      value: https://tp-app-oidc-757743287485.s3.us-east-1.amazonaws.com
+
+    # sts.amazonaws.com must be present or STS rejects the projected token.
+    # Keep the in-cluster audience so normal token validation still works.
+    - name: api-audiences
+      value: https://kubernetes.default.svc,sts.amazonaws.com
+
+    # REQUIRED for the S3-hosted setup. Left unset, the apiserver derives
+    # jwks_uri from its own external address and would advertise
+    # https://<master-ip>:6443/openid/v1/jwks, which STS cannot reach. Setting
+    # it means the discovery document the apiserver serves can be copied to the
+    # bucket verbatim, with no rewriting.
+    - name: service-account-jwks-uri
+      value: https://tp-app-oidc-757743287485.s3.us-east-1.amazonaws.com/openid/v1/jwks
+
+  # --service-account-signing-key-file is not set here: kubeadm already points
+  # it at /etc/kubernetes/pki/sa.key.
+
+  # Needed alongside the kubeletExtraArgs cloud-provider entry above.
+  # extraArgs:
+  #   - name: cloud-provider
+  #     value: external
+
+# controllerManager:
+#   extraArgs:
+#     - name: cloud-provider
+#       value: external
+
+# Set before init if you want a stable endpoint for adding control-plane nodes
+# later; it cannot be introduced afterwards without reissuing certificates.
+# controlPlaneEndpoint: "tp-app-api.internal:6443"

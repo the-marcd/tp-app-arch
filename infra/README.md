@@ -19,6 +19,7 @@ Flat Terraform (no modules) for a single AWS VPC with one public and one private
 | `vpc_endpoints.tf` | S3 gateway VPC endpoint |
 | `iam.tf` | IAM roles, instance profiles, S3 policies |
 | `s3.tf` | Application bucket and public OIDC bucket |
+| `cloud-init/` | Control-plane bootstrap template |
 | `policies/` | Vendored IAM policy JSON |
 | `key_pairs.tf` | SSH key pairs for the bastion and the k8s nodes |
 | `outputs.tf` | IDs of everything created |
@@ -141,6 +142,37 @@ Widen or replace the list to add more operators:
 bastion_ssh_cidrs = ["47.197.109.105/32", "203.0.113.0/24"]
 ```
 
+## Control-plane bootstrap
+
+`k8s_master` carries `user_data` rendered from
+`cloud-init/k8smaster.cloud-config.yaml.tftpl`. It installs `git`,
+`python3-debian` and `python3-boto3`, then uses cloud-init's native `ansible`
+module to run `ansible-pull` against `ansible_repo_url` (default
+`https://github.com/the-marcd/tp-app-arch.git`) and execute
+`k8smaster_playbook` (default `systems/k8smaster.yml`).
+
+Three behaviours this depends on, each verified upstream rather than assumed:
+
+- `ansible-pull` with no `--inventory` defaults to `-i localhost,` and limits to
+  `localhost,<hostname>,127.0.0.1`, so the playbook's `hosts: "*"` matches.
+- `package_update_upgrade_install` runs before `ansible` in
+  `cloud_final_modules`, so those three packages are present before the pull.
+- `install_method: distro` with `package_name: ansible` installs the full
+  `ansible` package, not `ansible-core` — required because the roles use the
+  `ansible.posix` and `amazon.aws` collections, which only the full package
+  bundles.
+
+**`user_data_replace_on_change = true`.** user_data only executes on first boot,
+so editing the template is meaningless on a live instance. With this set, a
+template change shows up in the plan as an instance replacement instead of
+silently doing nothing. It also means adding this to an already-running master
+replaces it.
+
+The repo must be reachable unauthenticated from the private subnet through the
+NAT gateway — `ansible-pull` runs before anything is configured.
+
+Output lands in `/var/log/cloud-init-output.log`.
+
 ## Cluster firewall rules
 
 `security_groups.tf` holds the groups and every rule. Rules are standalone
@@ -216,6 +248,7 @@ name, both assumed by `ec2.amazonaws.com`:
 | --- | --- | --- |
 | `<name>-k8s-master` | `k8s_master` | `AmazonEC2ContainerRegistryReadOnly`, `<name>-s3-access` |
 | `<name>-k8s-node` | every `k8s_worker` | `AmazonEC2ContainerRegistryReadOnly`, `<name>-s3-read` |
+| `<name>-aws-load-balancer-controller` | the controller's service account, via IRSA | `<name>-aws-load-balancer-controller` |
 
 They are split so the control plane's permissions can grow — cloud-controller
 manager, EBS CSI driver, etcd backups to S3 — without widening what the workers
@@ -261,11 +294,14 @@ an OIDC provider this self-managed cluster does not have, and EKS Pod Identity
 is unavailable outside EKS ("Kubernetes clusters that you create and run on
 Amazon EC2" are explicitly excluded upstream).
 
-The IMDS lockdown below limits the fallout, but it is not equivalent to IRSA:
-anything running `hostNetwork: true` still reaches the instance role. Scoping
-these permissions to a single service account means standing up IRSA — apiserver
-issuer flags, a public OIDC discovery document, an IAM OIDC provider, and the
-`amazon-eks-pod-identity-webhook`.
+The controller's permissions no longer sit on the instance roles: the
+`k8s_master_lbc` and `node_lbc` attachments are **commented out** in `iam.tf` in
+favour of the IRSA role in `irsa.tf`. The policy itself remains, attached to the
+service account role instead.
+
+Uncomment them only as a fallback if IRSA is not yet working — and note the
+controller must then run `hostNetwork: true`, because `imds_hop_limit = 1` keeps
+pods away from the instance role's credentials.
 
 ### IMDS lockdown
 
@@ -301,6 +337,57 @@ raise `imds_hop_limit` to `2` to undo it.
 - **Consider `--disable-restricted-sg-rules`.** The controller expects to mutate
   node security groups; Terraform owns them here, and the existing NodePort rule
   (30000–32767 from the VPC CIDR) already admits ALB traffic.
+
+## IRSA
+
+`irsa.tf` registers the cluster's own OIDC issuer with IAM and defines a role
+the controller's service account can assume directly, instead of inheriting the
+node's.
+
+**`aws_iam_openid_connect_provider.cluster`** — `url` is the OIDC bucket's
+regional domain over HTTPS, `client_id_list` is `["sts.amazonaws.com"]`. No
+`thumbprint_list`: for an S3-hosted JWKS endpoint AWS validates against its own
+trusted CA library and ignores configured thumbprints entirely.
+
+**`aws_iam_role.aws_load_balancer_controller`** — trust policy on
+`sts:AssumeRoleWithWebIdentity`, federated to that provider, with two
+`StringEquals` conditions:
+
+| Condition key | Value |
+| --- | --- |
+| `<issuer-host>:sub` | `system:serviceaccount:kube-system:aws-load-balancer-controller` |
+| `<issuer-host>:aud` | `sts.amazonaws.com` |
+
+The `sub` condition is what pins the role to one service account; without it any
+service account in the cluster could assume it. Namespace and name come from
+`lbc_namespace` and `lbc_service_account`. The vendored controller policy is
+attached to this role as well as to the instance roles.
+
+### Ordering
+
+The provider can be created before the discovery documents are uploaded: IAM
+verifies the endpoint's TLS certificate, not its content, and the S3 host serves
+TLS as soon as the bucket exists. The documents only need to be in place before
+the first `AssumeRoleWithWebIdentity` call — and they cannot exist until the
+cluster is up, so this necessarily lands in a later apply than the cluster
+build.
+
+### Wiring it to the controller
+
+No `amazon-eks-pod-identity-webhook` is needed for a single workload. Set these
+on the controller's pod spec or Helm values, using the
+`aws_load_balancer_controller_role_arn` output:
+
+```yaml
+serviceAccount:
+  name: aws-load-balancer-controller
+  annotations:
+    eks.amazonaws.com/role-arn: <aws_load_balancer_controller_role_arn>
+```
+
+Outside EKS that annotation is inert, so also project the token and set the SDK
+environment variables directly — `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`,
+and a `serviceAccountToken` volume with `audience: sts.amazonaws.com`.
 
 ## S3 buckets
 

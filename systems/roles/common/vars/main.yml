@@ -1,0 +1,14 @@
+---
+
+common_base_os_pkgs:
+ - containerd
+ - apt-transport-https
+ - ca-certificates
+ - curl
+ - gpg
+ - awscli
+
+common_k8s_pkgs:
+ - kubelet
+ - kubectl
+ - kubeadm

@@ -1,0 +1,61 @@
+---
+
+# - name: Set up k8s dirs
+#   ansible.builtin.file:
+#    path: "/etc/kubernetes/pki"
+#    state: directory
+#    owner: root
+#    group: root
+
+- name: Set up containerd cgroup config
+  ansible.builtin.copy:
+   src: files/containerd-config.toml
+   dest: /etc/containerd/config.toml
+  notify:
+   - Restart containerd
+
+- name: Set up kubeadm config file
+  ansible.builtin.copy:
+   src: files/kubeadm-config.yaml
+   dest: /tmp/kubeadm-config.yaml
+
+- name: Init Kubernetes cluster
+  ansible.builtin.shell: |
+    kubeadm init --config=/tmp/kubeadm-config.yaml
+  args:
+    # kubeadm init is not idempotent: on an already-initialised master it fails
+    # preflight (admin.conf and the static pod manifests exist, 6443 in use,
+    # /var/lib/etcd non-empty). admin.conf is written by a successful init, so
+    # it is the sentinel that makes a re-run a no-op instead of a failure.
+    creates: /etc/kubernetes/admin.conf
+  register: init_cluster
+
+- name: Dump cluster join command
+  # "is succeeded" rather than a bare "init_cluster": ansible-core 2.20 rejects a
+  # non-boolean conditional outright. Succeeded is also true when the task was
+  # skipped by creates, so a re-run still mints a fresh token -- bootstrap tokens
+  # expire after 24h. "is changed" would skip it on every re-run.
+  when: init_cluster is succeeded
+  ansible.builtin.shell: |
+    kubeadm token create --print-join-command > /root/cluster-join-command
+
+- name: Copy join command to S3 bucket
+  amazon.aws.s3_object:
+   bucket: tp-app-757743287485
+   src: /root/cluster-join-command
+   object: cluster-join-command
+   mode: put
+
+- name: Create root kubeconfig
+  ansible.builtin.file:
+   path: "{{ ansible_env.HOME }}/.kube"
+   state: directory
+
+- name: "Copy config file"
+  ansible.builtin.copy:
+   src: /etc/kubernetes/admin.conf
+   dest: "{{ ansible_env.HOME }}/.kube/config"
+   owner: root
+   group: root
+   mode: '0600'
+

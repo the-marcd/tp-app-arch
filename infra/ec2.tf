@@ -64,6 +64,16 @@ resource "aws_instance" "k8s_master" {
   subnet_id              = aws_subnet.private.id
   vpc_security_group_ids = [aws_security_group.k8s_master.id]
 
+  user_data = templatefile("${path.module}/cloud-init/k8smaster.cloud-config.yaml.tftpl", {
+    repo_url = var.ansible_repo_url
+    playbook = var.k8smaster_playbook
+  })
+
+  # user_data only executes on first boot, so an edit is meaningless unless the
+  # instance is rebuilt. Set true so a template change is visible in the plan as
+  # a replacement rather than silently taking no effect.
+  user_data_replace_on_change = true
+
   # IMDSv2 only, and a hop limit of 1 so pod traffic -- which crosses the
   # Flannel bridge to reach 169.254.169.254 -- cannot read the instance role's
   # credentials. Workloads that legitimately need them run hostNetwork: true.

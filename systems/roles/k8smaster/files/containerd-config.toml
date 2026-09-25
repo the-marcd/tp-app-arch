@@ -1,0 +1,25 @@
+# containerd configuration for a kubeadm control plane.
+#
+# Purpose: make containerd use the systemd cgroup driver. kubeadm configures the
+# kubelet for systemd cgroups, while containerd's built-in default is cgroupfs.
+# The mismatch lets containerd start but makes kubelet fail, which surfaces as an
+# opaque "kubeadm init" timeout waiting for the control plane.
+#
+# version = 3 and the io.containerd.cri.v1.runtime plugin path are the
+# containerd 2.x form. Ubuntu 26.04 (resolute) ships containerd 2.2.
+# containerd 1.x instead wants version = 2 with
+# [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options].
+# containerd 2.x still accepts and auto-converts a version 2 file, but not the
+# reverse -- so this file requires containerd >= 2.0.
+#
+# This file REPLACES /etc/containerd/config.toml. That is safe because
+# containerd applies its built-in defaults to anything a config file omits; only
+# the keys below are overridden. It is not a full dump of the default config.
+
+version = 3
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+runtime_type = 'io.containerd.runc.v2'
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+SystemdCgroup = true

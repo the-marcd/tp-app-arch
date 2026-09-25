@@ -1,0 +1,35 @@
+#cloud-config
+# Bootstrap for the k8s control plane: pull this repo and run the k8smaster
+# playbook against localhost.
+#
+# cloud-init's native `ansible` module runs `ansible-pull`. Verified behaviour it
+# relies on:
+#   - ansible-pull with no --inventory defaults to `-i localhost,` and limits to
+#     localhost/hostname/127.0.0.1, so the playbook's `hosts: "*"` matches.
+#   - package_update_upgrade_install runs before the ansible module in
+#     cloud_final_modules, so the packages below are present before the pull.
+#
+# Runs once, on first boot only. Editing this template does not re-run it on a
+# live instance; the instance has to be replaced (user_data_replace_on_change).
+
+package_update: true
+
+packages:
+  # ansible-pull clones over git.
+  - git
+  # ansible.builtin.deb822_repository (roles/common) needs python3-debian.
+  - python3-debian
+  # amazon.aws.s3_object (roles/k8smaster) needs boto3.
+  - python3-boto3
+
+ansible:
+  # The distro `ansible` package, not `ansible-core`: the playbook uses the
+  # ansible.posix and amazon.aws collections, which only the full package bundles.
+  install_method: distro
+  package_name: ansible
+  pull:
+    url: ${repo_url}
+    playbook_name: ${playbook}
+
+output:
+  all: '| tee -a /var/log/cloud-init-output.log'

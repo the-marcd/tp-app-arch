@@ -1,0 +1,6 @@
+---
+
+- hosts: "*"
+  roles:
+    - common
+    - k8snode

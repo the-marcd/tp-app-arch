@@ -154,9 +154,8 @@ resource "aws_iam_role_policy_attachment" "node_s3_read" {
 # There is no AWS-managed equivalent. Re-download it when upgrading the
 # controller: new releases add actions.
 #
-# Attached to the instance roles because IRSA needs an OIDC provider this
-# self-managed cluster does not have. That means every pod on these nodes
-# inherits the permissions -- see README.
+# The policy itself stays: irsa.tf attaches it to the controller's own service
+# account role, which is the scoped way to grant it.
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_policy" "aws_load_balancer_controller" {
@@ -165,12 +164,20 @@ resource "aws_iam_policy" "aws_load_balancer_controller" {
   policy      = file("${path.module}/policies/aws-load-balancer-controller-iam-policy.json")
 }
 
-resource "aws_iam_role_policy_attachment" "k8s_master_lbc" {
-  role       = aws_iam_role.k8s_master.name
-  policy_arn = aws_iam_policy.aws_load_balancer_controller.arn
-}
-
-resource "aws_iam_role_policy_attachment" "node_lbc" {
-  role       = aws_iam_role.node.name
-  policy_arn = aws_iam_policy.aws_load_balancer_controller.arn
-}
+# Commented out in favour of the IRSA role in irsa.tf. These attached the
+# controller's permissions to the instance roles, so every pod on those nodes
+# inherited the ability to create load balancers and mutate security groups.
+#
+# Uncomment only as a fallback if IRSA is not working yet -- and note the
+# controller must then run hostNetwork: true, since imds_hop_limit = 1 keeps
+# pods away from the instance role's credentials.
+#
+# resource "aws_iam_role_policy_attachment" "k8s_master_lbc" {
+#   role       = aws_iam_role.k8s_master.name
+#   policy_arn = aws_iam_policy.aws_load_balancer_controller.arn
+# }
+#
+# resource "aws_iam_role_policy_attachment" "node_lbc" {
+#   role       = aws_iam_role.node.name
+#   policy_arn = aws_iam_policy.aws_load_balancer_controller.arn
+# }

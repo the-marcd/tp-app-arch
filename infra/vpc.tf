@@ -17,6 +17,11 @@ locals {
 
   cluster_name = coalesce(var.cluster_name, var.name)
 
+  # The cluster's OIDC issuer: the public bucket from s3.tf. The host form
+  # (no scheme) is what IAM condition keys are prefixed with.
+  oidc_issuer_url  = "https://${aws_s3_bucket.oidc.bucket_regional_domain_name}"
+  oidc_issuer_host = aws_s3_bucket.oidc.bucket_regional_domain_name
+
   # Tags the AWS Load Balancer Controller uses for subnet auto-discovery.
   cluster_subnet_tags = {
     "kubernetes.io/cluster/${local.cluster_name}" = "shared"

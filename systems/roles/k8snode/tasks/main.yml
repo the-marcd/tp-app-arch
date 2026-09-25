@@ -1,0 +1,24 @@
+---
+
+- name: Copy join command from s3
+  amazon.aws.s3_object:
+   copy_src:
+    bucket: tp-app-757743287485
+    object: cluster-join-command
+   dest: /tmp/cluster-join-command
+   mode: copy
+
+- name: Get join command
+  register:
+   join_cmd: "{{ lookup('file', '/tmp/cluster-join-command') }}"
+
+- name: Join cluster
+  ansible.builtin.shell: |
+    "{{ join_cmd }}"
+
+- name: Enable and check kubelet service
+  systemd:
+   name: kubelet
+   daemon_reload: true
+   state: started
+   enabled: true

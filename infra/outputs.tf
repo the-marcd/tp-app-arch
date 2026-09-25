@@ -186,5 +186,15 @@ output "oidc_bucket_arn" {
 
 output "oidc_issuer_url" {
   description = "Issuer URL for the OIDC bucket; use as kube-apiserver --service-account-issuer and as the IAM OIDC provider URL."
-  value       = "https://${aws_s3_bucket.oidc.bucket_regional_domain_name}"
+  value       = local.oidc_issuer_url
+}
+
+output "cluster_oidc_provider_arn" {
+  description = "ARN of the cluster's IAM OIDC provider."
+  value       = aws_iam_openid_connect_provider.cluster.arn
+}
+
+output "aws_load_balancer_controller_role_arn" {
+  description = "ARN of the IRSA role for the AWS Load Balancer Controller service account; set as its eks.amazonaws.com/role-arn annotation or AWS_ROLE_ARN."
+  value       = aws_iam_role.aws_load_balancer_controller.arn
 }

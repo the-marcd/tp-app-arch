@@ -213,6 +213,34 @@ variable "oidc_bucket_name" {
   default     = null
 }
 
+variable "lbc_namespace" {
+  description = "Namespace of the AWS Load Balancer Controller service account, for the IRSA trust policy."
+  type        = string
+  default     = "kube-system"
+}
+
+variable "lbc_service_account" {
+  description = "Name of the AWS Load Balancer Controller service account, for the IRSA trust policy."
+  type        = string
+  default     = "aws-load-balancer-controller"
+}
+
+variable "ansible_repo_url" {
+  description = <<-EOT
+    Public git URL that cloud-init hands to ansible-pull on the control plane.
+    Must be reachable unauthenticated from the private subnet via the NAT
+    gateway -- ansible-pull runs before any credentials are configured.
+  EOT
+  type        = string
+  default     = "https://github.com/the-marcd/tp-app-arch.git"
+}
+
+variable "k8smaster_playbook" {
+  description = "Playbook path within the repo for ansible-pull to run on the control plane."
+  type        = string
+  default     = "systems/k8smaster.yml"
+}
+
 variable "tags" {
   description = "Tags applied to every resource."
   type        = map(string)

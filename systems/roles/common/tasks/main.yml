@@ -1,0 +1,43 @@
+---
+
+- name: Disable system swap
+  ansible.builtin.shell: "swapoff -a"
+
+- name: Remove current swaps from fstab
+  ansible.builtin.lineinfile:
+    dest: /etc/fstab
+    regexp: '(?i)^([^#][\S]+\s+(none|swap)\s+swap.*)'
+    line: '# \1'
+    backrefs: true
+    state: present
+
+- name: Pass bridged IPv4 traffic to iptable's chains, add IP forwarding
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+  with_items:
+    - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+    - { name: 'net.ipv4.ip_forward', value: '1' }
+
+- name: Install base OS packages
+  ansible.builtin.apt:
+    name: "{{ item }}"
+    state: present
+  with_items:
+    - "{{ common_base_os_pkgs }}"
+
+- name: Add k8s repo
+  ansible.builtin.deb822_repository:
+    name: kubernetes
+    suites: "/"
+    signed_by: https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key
+    uris:
+      - https://pkgs.k8s.io/core:/stable:/v1.36/deb/
+
+- name: Install common k8s packages
+  ansible.builtin.apt:
+    name: "{{ item }}"
+    state: present
+  with_items:
+    - "{{ common_k8s_pkgs }}"
