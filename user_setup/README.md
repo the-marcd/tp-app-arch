@@ -27,7 +27,7 @@ Two consequences worth internalising:
 
 ## The sequence
 
-Steps 1 and 3-6 are yours to run. **Step 2 is a gate you cannot script past**:
+Steps 1 and 3 onwards are yours to run. **Step 2 is a gate you cannot script past**:
 the `kubernetes.io/kube-apiserver-client` signer is never auto-approved, so
 nothing is issued until a human with rights over CSRs approves the request.
 
@@ -36,14 +36,17 @@ nothing is issued until a human with rights over CSRs approves the request.
         |
 2. kubectl certificate approve   <-- manual gate; no certificate exists before this
         |
-3. collect .status.certificate   the signed certificate
+3. make-kubeconfig.sh            collects .status.certificate, writes the kubeconfig
+   (sections 3 and 5)
         |
 4. apply the RoleBinding         authorisation
         |
-5. build the kubeconfig
-        |
-6. verify
+5. verify
 ```
+
+Two scripts, one manual step between them. Sections 3 and 5 below are both
+covered by `make-kubeconfig.sh`; each also documents the equivalent kubectl
+commands if you would rather do it by hand.
 
 The RoleBinding in step 4 can technically be applied at any point — RBAC does
 not check that its subject exists. But it does nothing until the certificate
@@ -94,6 +97,25 @@ kubectl get csr alice -o jsonpath='{.spec.request}' | base64 -d | openssl req -n
 To refuse instead: `kubectl certificate deny alice`.
 
 ## 3. Collect the signed certificate
+
+`make-kubeconfig.sh` does this and step 5 together, and is the easier path:
+
+```sh
+./make-kubeconfig.sh alice
+```
+
+It reads `.status.certificate` — the certificate the cluster signed, not the
+request — writes it to `alice/alice.crt`, and builds `alice/alice.kubeconfig`
+around it. It refuses to run on a CSR that is denied, failed, still unapproved,
+or approved but not yet signed, rather than producing a kubeconfig with an empty
+certificate in it. It also checks the private key on disk matches the
+certificate, since a mismatch otherwise surfaces only as an opaque TLS handshake
+failure later.
+
+Cluster name, API server URL and CA default to whatever the current kubectl
+context points at; `-c`, `-s` and `-a` override them.
+
+By hand, if you prefer:
 
 ```sh
 kubectl get csr alice -o jsonpath='{.status.certificate}' | base64 -d > alice/alice.crt
@@ -159,6 +181,8 @@ Cluster-wide, use `kubectl create clusterrolebinding` with `--clusterrole`.
 
 ## 5. Build a kubeconfig
 
+Already done if you ran `make-kubeconfig.sh` in step 3. The manual equivalent:
+
 ```sh
 CLUSTER=tp-app
 SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
@@ -185,7 +209,7 @@ kubectl config use-context alice@"$CLUSTER" --kubeconfig=alice/alice.kubeconfig
 
 `--embed-certs=true` inlines the material so the file is self-contained and can
 be handed over as one artifact. It therefore **contains the private key** —
-treat it accordingly.
+the script writes it mode 0600; treat it accordingly.
 
 ## 6. Verify
 

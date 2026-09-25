@@ -17,6 +17,7 @@ than claiming the whole file.
 | `cluster_base/website-role.yaml` | All content. |
 | `cluster_base/website-rolebinding.yaml` | All content. |
 | `user_setup/create-user-csr.sh` | All content. |
+| `user_setup/make-kubeconfig.sh` | All content. |
 | `user_setup/README.md` | All content. |
 | `cluster_base/cert-manager/kustomization.yaml` | All content. |
 | `cluster_base/cert-manager/irsa-patch.yaml` | All content. |
@@ -118,6 +119,19 @@ configurable `expirationSeconds` and the `client auth` usage. Validates the
 username and expiry, refuses to overwrite an existing private key or an existing
 CSR object, creates the key under `umask 077`, and uses `openssl base64 -A`
 rather than the GNU-only `base64 -w0`.
+
+**`user_setup/make-kubeconfig.sh`** — A bash script that collects the signed
+certificate from an approved CertificateSigningRequest — `.status.certificate`,
+the certificate the cluster issued, not the request — and assembles a
+self-contained kubeconfig around it with `kubectl config set-cluster` /
+`set-credentials` / `set-context` / `use-context` and `--embed-certs`. It refuses
+to run on a CSR that is denied, failed, unapproved, or approved but not yet
+signed; it compares the RSA modulus of the local private key against the
+certificate to catch a key/user mismatch before it becomes an opaque TLS
+failure; and it defaults the cluster name, API server URL and CA to the current
+kubectl context, handling a CA held either inline or as a file path. The
+kubeconfig is written under `umask 077` because the private key is embedded in
+it.
 
 **`user_setup/README.md`** — How certificate-based identity maps to Kubernetes
 users and groups, and the kubectl commands for the full flow: submit, inspect
