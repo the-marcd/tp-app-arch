@@ -1,6 +1,10 @@
-# The NAT gateway is always provisioned: it bills hourly plus per-GB from the
-# moment it exists, and it is what gives the private subnet its egress.
+# Gated on var.enable_nat_gateway, default true: the private subnet has no other
+# egress, so the cluster cannot build without it. Set false to stop the hourly
+# and per-GB charges while the environment is idle -- the private subnet then
+# keeps only its implicit local route.
 resource "aws_eip" "nat" {
+  count = var.enable_nat_gateway ? 1 : 0
+
   domain = "vpc"
 
   tags = {
@@ -9,7 +13,9 @@ resource "aws_eip" "nat" {
 }
 
 resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
+  count = var.enable_nat_gateway ? 1 : 0
+
+  allocation_id = aws_eip.nat[0].id
   subnet_id     = aws_subnet.public.id
 
   tags = {

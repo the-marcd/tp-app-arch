@@ -39,13 +39,13 @@ output "internet_gateway_id" {
 }
 
 output "nat_gateway_id" {
-  description = "ID of the NAT gateway."
-  value       = aws_nat_gateway.main.id
+  description = "ID of the NAT gateway, or null when enable_nat_gateway is false."
+  value       = one(aws_nat_gateway.main[*].id)
 }
 
 output "nat_gateway_public_ip" {
-  description = "Public IP of the NAT gateway."
-  value       = aws_eip.nat.public_ip
+  description = "Public IP of the NAT gateway, or null when enable_nat_gateway is false."
+  value       = one(aws_eip.nat[*].public_ip)
 }
 
 output "public_route_table_id" {
@@ -190,11 +190,36 @@ output "oidc_issuer_url" {
 }
 
 output "cluster_oidc_provider_arn" {
-  description = "ARN of the cluster's IAM OIDC provider."
-  value       = aws_iam_openid_connect_provider.cluster.arn
+  description = "ARN of the cluster's IAM OIDC provider, or null when enable_oidc_provider is false."
+  value       = one(aws_iam_openid_connect_provider.cluster[*].arn)
 }
 
 output "aws_load_balancer_controller_role_arn" {
   description = "ARN of the IRSA role for the AWS Load Balancer Controller service account; set as its eks.amazonaws.com/role-arn annotation or AWS_ROLE_ARN."
-  value       = aws_iam_role.aws_load_balancer_controller.arn
+  value       = one(aws_iam_role.aws_load_balancer_controller[*].arn)
+}
+
+output "dns_zone_id" {
+  description = "ID of the public hosted zone."
+  value       = aws_route53_zone.tp.zone_id
+}
+
+output "dns_zone_arn" {
+  description = "ARN of the public hosted zone."
+  value       = aws_route53_zone.tp.arn
+}
+
+output "dns_zone_name_servers" {
+  description = "Name servers for the zone; create these as an NS record set in the parent zone to delegate to it."
+  value       = aws_route53_zone.tp.name_servers
+}
+
+output "external_dns_role_arn" {
+  description = "ARN of the IRSA role for the external-dns service account."
+  value       = one(aws_iam_role.external_dns[*].arn)
+}
+
+output "cert_manager_role_arn" {
+  description = "ARN of the IRSA role for the cert-manager service account; set as its eks.amazonaws.com/role-arn annotation."
+  value       = one(aws_iam_role.cert_manager[*].arn)
 }

@@ -21,6 +21,9 @@ packages:
   - python3-debian
   # amazon.aws.s3_object (roles/k8smaster) needs boto3.
   - python3-boto3
+  # kubernetes.core.k8s_info (roles/k8smaster) needs the kubernetes client
+  # library; the collection requires >= 24.2.0.
+  - python3-kubernetes
 
 ansible:
   # The distro `ansible` package, not `ansible-core`: the playbook uses the

@@ -14,6 +14,13 @@
   notify:
    - Restart containerd
 
+# Handlers otherwise run at the very end of the play -- long after kubeadm init.
+# The systemd cgroup driver would then not be in effect for the init that needs
+# it, and the kubelet/containerd driver mismatch would stall the control plane.
+# Flushing here restarts containerd before anything below uses it.
+- name: Apply the containerd restart now, not at end of play
+  ansible.builtin.meta: flush_handlers
+
 - name: Set up kubeadm config file
   ansible.builtin.copy:
    src: files/kubeadm-config.yaml
@@ -46,12 +53,133 @@
    object: cluster-join-command
    mode: put
 
-- name: Create root kubeconfig
+# kubeadm init returning does not guarantee the API server is serving requests,
+# and every task below talks to it. Poll until Nodes can be listed, then gate
+# the rest of the role on this instead of on init_cluster.
+#
+# The condition tests "is defined" first: while the API server is still coming
+# up k8s_info fails outright and leaves resources undefined, and until retries a
+# failed task as long as its condition can still be evaluated.
+#
+# 30 x 10s gives the control plane five minutes to come up.
+#
+# Deliberately ungated: "is succeeded" is true for a SKIPPED result, so a gate
+# task that can itself be skipped would not protect anything downstream. This
+# task always runs -- and it is only ever reached when the init above succeeded
+# or was skipped by creates, since a genuine init failure aborts the play.
+- name: Wait for the API server to be ready
+  kubernetes.core.k8s_info:
+   kind: Node
+  environment:
+   KUBECONFIG: /etc/kubernetes/admin.conf
+  register: apiserver_ready
+  until: apiserver_ready.resources is defined and apiserver_ready.resources | length > 0
+  retries: 30
+  delay: 10
+
+# Pinned rather than .../releases/latest/download/, to match the way the k8s
+# apt repo is pinned to v1.36: an unattended rebuild months from now should get
+# the same CNI it was tested with.
+#
+# v0.28.9's manifest ships net-conf.json with Network 10.244.0.0/16 and
+# Backend.Type vxlan -- matching podSubnet in kubeadm-config.yaml and the
+# UDP 8472 security group rules respectively. Check both if this is bumped.
+#
+# KUBECONFIG is set explicitly because this runs before the root kubeconfig is
+# written further down, so ~/.kube/config does not exist yet.
+- name: Install Flannel CNI
+  when: apiserver_ready is succeeded
+  ansible.builtin.shell: |
+    kubectl apply -f https://github.com/flannel-io/flannel/releases/download/v0.28.9/kube-flannel.yml
+  environment:
+   KUBECONFIG: /etc/kubernetes/admin.conf
+  register: flannel_apply
+  changed_when: "'created' in flannel_apply.stdout or 'configured' in flannel_apply.stdout"
+
+# --------------------------------------------------------------------------
+# Publish the OIDC discovery documents for IRSA.
+#
+# The API server serves these; kubeadm writes no such files. They are fetched
+# over HTTPS with the admin client certificate out of admin.conf rather than
+# via "kubectl get --raw", so no shell is involved.
+#
+# No rewriting is needed on the way through: kubeadm-config.yaml sets
+# service-account-jwks-uri to the bucket, so the served document already
+# advertises a reachable key set.
+# --------------------------------------------------------------------------
+
+- name: Read admin.conf
+  when: apiserver_ready is succeeded
+  ansible.builtin.slurp:
+   src: /etc/kubernetes/admin.conf
+  register: admin_conf_raw
+
+- name: Parse admin.conf
+  when: apiserver_ready is succeeded
+  ansible.builtin.set_fact:
+   admin_conf: "{{ admin_conf_raw.content | b64decode | from_yaml }}"
+
+# uri takes file paths, not inline PEM, so the admin credentials have to land
+# on disk briefly. They are the same key already inside admin.conf, mode 0600,
+# and removed again below.
+- name: Write API client certificate and key
+  when: apiserver_ready is succeeded
+  ansible.builtin.copy:
+   content: "{{ admin_conf.users[0].user[item.field] | b64decode }}"
+   dest: "/etc/kubernetes/pki/{{ item.name }}"
+   owner: root
+   group: root
+   mode: '0600'
+  loop:
+   - { name: oidc-dump-client.crt, field: client-certificate-data }
+   - { name: oidc-dump-client.key, field: client-key-data }
+  no_log: true
+
+- name: Fetch OIDC documents from the API server
+  when: apiserver_ready is succeeded
+  ansible.builtin.uri:
+   url: "{{ admin_conf.clusters[0].cluster.server }}{{ item.path }}"
+   client_cert: /etc/kubernetes/pki/oidc-dump-client.crt
+   client_key: /etc/kubernetes/pki/oidc-dump-client.key
+   ca_path: /etc/kubernetes/pki/ca.crt
+   return_content: true
+  loop:
+   - { path: /.well-known/openid-configuration, object: .well-known/openid-configuration }
+   - { path: /openid/v1/jwks, object: openid/v1/jwks }
+  register: oidc_documents
+
+- name: Publish OIDC documents to the OIDC bucket
+  when: apiserver_ready is succeeded
+  amazon.aws.s3_object:
+   bucket: tp-app-oidc-757743287485
+   object: "{{ item.item.object }}"
+   content: "{{ item.content }}"
+   # Both keys are extensionless, so S3 would otherwise store them as
+   # binary/octet-stream. ContentType is promoted to an ExtraArg by the module.
+   headers:
+    ContentType: application/json
+   mode: put
+  loop: "{{ oidc_documents.results }}"
+  loop_control:
+   label: "{{ item.item.object }}"
+
+- name: Remove the temporary API client credentials
+  when: apiserver_ready is succeeded
+  ansible.builtin.file:
+   path: "/etc/kubernetes/pki/{{ item }}"
+   state: absent
+  loop:
+   - oidc-dump-client.crt
+   - oidc-dump-client.key
+
+- name: Create root kubeconfig dir
+  when: apiserver_ready is succeeded
   ansible.builtin.file:
    path: "{{ ansible_env.HOME }}/.kube"
    state: directory
 
 - name: "Copy config file"
+  when: apiserver_ready is succeeded
   ansible.builtin.copy:
    src: /etc/kubernetes/admin.conf
    dest: "{{ ansible_env.HOME }}/.kube/config"

@@ -60,9 +60,17 @@ All four subnets carry the AWS Load Balancer Controller's discovery tags:
 
 ## NAT gateway
 
-The NAT gateway, its Elastic IP, and the private subnet's `0.0.0.0/0` route are
-always provisioned — there is no flag. It is what gives the private subnet its
-egress, and it bills hourly plus per-GB for as long as it exists.
+Gated on `enable_nat_gateway`, **default `true`**. It covers the NAT gateway, its
+Elastic IP and the private subnet's `0.0.0.0/0` route. On by default because the
+private subnet has no other egress — without it the cluster cannot pull images or
+packages.
+
+It bills hourly plus per-GB for as long as it exists, so turning it off is the
+single biggest saving while the environment is idle:
+
+```sh
+terraform apply -var 'enable_nat_gateway=false'
+```
 
 ## Compute
 
@@ -349,6 +357,50 @@ regional domain over HTTPS, `client_id_list` is `["sts.amazonaws.com"]`. No
 `thumbprint_list`: for an S3-hosted JWKS endpoint AWS validates against its own
 trusted CA library and ignores configured thumbprints entirely.
 
+**`aws_iam_role.external_dns`** — same pattern, pinned to
+`system:serviceaccount:<external_dns_namespace>:<external_dns_service_account>`
+(defaults `kube-system` / `external-dns`). Its policy is narrower than
+upstream's reference: the record actions are scoped to this zone's ARN rather
+than `hostedzone/*`.
+
+| Statement | Actions | Resource |
+| --- | --- | --- |
+| `ManageRecordsInTheZone` | `route53:ChangeResourceRecordSets`, `ListResourceRecordSets`, `ListTagsForResources` | the `tp.darcsaint.net` zone ARN |
+| `DiscoverZones` | `route53:ListHostedZones` | `*` |
+
+`ListHostedZones` has no resource-level permissions in IAM, so it cannot be
+scoped — external-dns calls it to map a record name onto a zone, and the other
+actions are unreachable without it.
+
+**`aws_iam_role.cert_manager`** — same pattern, pinned to
+`system:serviceaccount:<cert_manager_namespace>:<cert_manager_service_account>`
+(defaults `cert-manager` / `cert-manager`). Its policy follows cert-manager's
+documented Route 53 solver policy, with the record actions narrowed to this
+zone:
+
+| Statement | Actions | Resource |
+| --- | --- | --- |
+| `PollChangeStatus` | `route53:GetChange` | `arn:aws:route53:::change/*` |
+| `WriteChallengeRecords` | `route53:ChangeResourceRecordSets`, `ListResourceRecordSets` | the zone ARN, **TXT records only** |
+| `ResolveZoneByName` | `route53:ListHostedZonesByName` | `*` |
+
+Two constraints worth keeping in mind. `GetChange` cannot be scoped below
+`change/*` because change IDs are not predictable. And the record statement
+carries upstream's condition:
+
+```json
+"ForAllValues:StringEquals": {
+  "route53:ChangeResourceRecordSetsRecordTypes": ["TXT"]
+}
+```
+
+which is the reason cert-manager and external-dns can share a zone safely —
+cert-manager can only write the `_acme-challenge` TXT records, never the
+A/CNAME/NS records external-dns and the delegation depend on.
+
+`ResolveZoneByName` can be dropped once the `Issuer`/`ClusterIssuer` pins
+`hostedZoneID`; it exists only so cert-manager can map a domain to its zone.
+
 **`aws_iam_role.aws_load_balancer_controller`** — trust policy on
 `sts:AssumeRoleWithWebIdentity`, federated to that provider, with two
 `StringEquals` conditions:
@@ -363,14 +415,25 @@ service account in the cluster could assume it. Namespace and name come from
 `lbc_namespace` and `lbc_service_account`. The vendored controller policy is
 attached to this role as well as to the instance roles.
 
-### Ordering
+### Ordering — this is a two-phase apply
 
-The provider can be created before the discovery documents are uploaded: IAM
-verifies the endpoint's TLS certificate, not its content, and the S3 host serves
-TLS as soon as the bucket exists. The documents only need to be in place before
-the first `AssumeRoleWithWebIdentity` call — and they cannot exist until the
-cluster is up, so this necessarily lands in a later apply than the cluster
-build.
+Gated on `enable_oidc_provider`, **default `false`**, which also gates the three
+IRSA roles and their attachments, since their trust policies name the provider's
+ARN.
+
+IAM validates the issuer during `CreateOpenIDConnectProvider`: it fetches the
+discovery document, so the provider cannot be created until the control plane has
+actually published one to the OIDC bucket. That needs a running cluster, which
+needs this configuration applied. Hence:
+
+```sh
+terraform apply                                  # phase 1: everything else
+# master boots, runs kubeadm init, publishes the OIDC documents to the bucket
+terraform apply -var 'enable_oidc_provider=true'  # phase 2: provider + IRSA roles
+```
+
+With the flag off, `cluster_oidc_provider_arn` and the three `*_role_arn`
+outputs are `null`.
 
 ### Wiring it to the controller
 
@@ -388,6 +451,28 @@ serviceAccount:
 Outside EKS that annotation is inert, so also project the token and set the SDK
 environment variables directly — `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`,
 and a `serviceAccountToken` volume with `audience: sts.amazonaws.com`.
+
+## DNS
+
+`route53.tf` creates the public hosted zone `dns_zone_name`, default
+`tp.darcsaint.net`. Records in it are written by external-dns using the IRSA
+role above.
+
+### Delegation is not automatic
+
+`tp.darcsaint.net` is a subdomain, so this zone resolves only once the parent
+`darcsaint.net` zone delegates to it. Terraform creates the zone and its four
+name servers but **cannot** create that delegation — the parent zone is not
+managed here.
+
+After applying, take the `dns_zone_name_servers` output and create a matching
+`NS` record set for `tp` in the parent zone. Until then the zone exists, and
+external-dns will happily write records into it, but nothing on the internet
+resolves them.
+
+If `darcsaint.net` turns out to live in this same AWS account, the delegation
+can be managed here too with an `aws_route53_record` of type `NS` against the
+parent zone — worth doing, since it keeps the two in sync.
 
 ## S3 buckets
 

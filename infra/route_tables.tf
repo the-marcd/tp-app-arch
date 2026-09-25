@@ -31,9 +31,11 @@ resource "aws_route_table" "private" {
 }
 
 resource "aws_route" "private_default" {
+  count = var.enable_nat_gateway ? 1 : 0
+
   route_table_id         = aws_route_table.private.id
   destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.main.id
+  nat_gateway_id         = aws_nat_gateway.main[0].id
 }
 
 # Both private subnets share one route table, so AZ-b egress crosses to the NAT

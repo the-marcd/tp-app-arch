@@ -241,6 +241,63 @@ variable "k8smaster_playbook" {
   default     = "systems/k8smaster.yml"
 }
 
+variable "dns_zone_name" {
+  description = <<-EOT
+    Public Route 53 hosted zone for cluster records. A subdomain zone only
+    resolves once its parent delegates to it -- see the dns_zone_name_servers
+    output.
+  EOT
+  type        = string
+  default     = "tp.darcsaint.net"
+}
+
+variable "external_dns_namespace" {
+  description = "Namespace of the external-dns service account, for the IRSA trust policy."
+  type        = string
+  default     = "kube-system"
+}
+
+variable "external_dns_service_account" {
+  description = "Name of the external-dns service account, for the IRSA trust policy."
+  type        = string
+  default     = "external-dns"
+}
+
+variable "cert_manager_namespace" {
+  description = "Namespace of the cert-manager service account, for the IRSA trust policy."
+  type        = string
+  default     = "cert-manager"
+}
+
+variable "cert_manager_service_account" {
+  description = "Name of the cert-manager service account, for the IRSA trust policy."
+  type        = string
+  default     = "cert-manager"
+}
+
+variable "enable_nat_gateway" {
+  description = <<-EOT
+    Provision the NAT gateway, its Elastic IP and the private subnet's default
+    route. On by default: without it the private subnet has no egress and the
+    cluster cannot pull images or packages. Turn off to stop the hourly and
+    per-GB charges while the environment is idle.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "enable_oidc_provider" {
+  description = <<-EOT
+    Create the cluster's IAM OIDC provider and the IRSA roles that trust it.
+    Off by default: IAM validates the issuer when the provider is created, so
+    this cannot succeed until the control plane has published its discovery
+    documents to the OIDC bucket. Apply once with this false, let the master
+    publish them, then set it true and apply again.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "tags" {
   description = "Tags applied to every resource."
   type        = map(string)

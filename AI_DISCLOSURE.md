@@ -14,7 +14,7 @@ than claiming the whole file.
 | `AI_DISCLOSURE.md` | This file. |
 | `systems/roles/k8smaster/files/kubeadm-config.yaml` | All content. |
 | `systems/roles/k8smaster/files/containerd-config.toml` | All content (replacing a user-authored file). |
-| `systems/roles/k8smaster/tasks/main.yml` | Partial: two task edits only, described below. |
+| `systems/roles/k8smaster/tasks/main.yml` | Partial: specific task edits only, described below. |
 | `.claude/settings.json` | All content. |
 | `.claude/hooks/ai-disclosure-reminder.sh` | All content. |
 | `infra/README.md` | All content. |
@@ -32,6 +32,7 @@ than claiming the whole file.
 | `infra/vpc_endpoints.tf` | All content. |
 | `infra/iam.tf` | All content. |
 | `infra/irsa.tf` | All content. |
+| `infra/route53.tf` | All content. |
 | `infra/s3.tf` | All content. |
 | `infra/cloud-init/k8smaster.cloud-config.yaml.tftpl` | All content. |
 | `infra/policies/aws-load-balancer-controller-iam-policy.json` | Vendored upstream file, not authored. |
@@ -47,7 +48,7 @@ This disclosure document, in the repository root.
 ### `systems/roles/k8smaster/tasks/main.yml`
 
 **Not an AI-authored file** — the playbook role is the user's. This program made
-two edits to it, and nothing else in the file is its work:
+the following edits to it, and nothing else in the file is its work:
 
 1. Added `args: creates: /etc/kubernetes/admin.conf` to the "Init Kubernetes
    cluster" task, so a re-run of the playbook is a no-op rather than a
@@ -56,8 +57,32 @@ two edits to it, and nothing else in the file is its work:
    `when: init_cluster is succeeded`, because ansible-core 2.20 rejects a
    non-boolean conditional; `is succeeded` also stays true when the init task was
    skipped by the `creates` sentinel, so re-runs still mint a fresh token.
+3. Added six tasks that publish the cluster's OIDC discovery documents for IRSA,
+   all guarded by the same `is succeeded` condition: `slurp` and `set_fact` to
+   read and parse `admin.conf`; a `copy` loop writing the admin client
+   certificate and key to `/etc/kubernetes/pki` at mode 0600 with `no_log`; a
+   `uri` loop fetching `/.well-known/openid-configuration` and
+   `/openid/v1/jwks` from the API server using those credentials and the cluster
+   CA; an `amazon.aws.s3_object` loop putting both into the OIDC bucket at the
+   matching keys with a `ContentType: application/json` header; and a `file`
+   loop removing the temporary credentials. The `uri` route avoids `kubectl get
+   --raw`, so no shell module is used.
+4. Added an "Install Flannel CNI" task, also guarded by `is succeeded`, running
+   `kubectl apply` against a version-pinned flannel manifest
+   (`v0.28.9`) with `KUBECONFIG` set to `/etc/kubernetes/admin.conf` and a
+   `changed_when` keyed on `created`/`configured` appearing in the output. The
+   shell module is used here at the user's direction.
+5. Added a `kubernetes.core.k8s_info` readiness probe after the join-command
+   upload, listing Nodes with `KUBECONFIG` pointed at `/etc/kubernetes/admin.conf`
+   and `until`/`retries`/`delay` polling for up to five minutes, then re-gated
+   every task after it on `apiserver_ready is succeeded` (including the two
+   kubeconfig tasks, which previously had no guard). The probe itself is
+   deliberately ungated.
+6. Added `ansible.builtin.meta: flush_handlers` immediately after the containerd
+   config task, so the Restart containerd handler runs before `kubeadm init`
+   rather than at the end of the play.
 
-Explanatory comments accompany both edits.
+Explanatory comments accompany all six edits.
 
 ### `systems/roles/k8smaster/files/containerd-config.toml`
 
@@ -96,8 +121,9 @@ A flat Terraform configuration (no modules, per instruction) describing a single
 AWS VPC with one public and one private subnet, an internet gateway, a NAT
 gateway, EC2 instances for a bastion and a k8s cluster, VPC endpoints for ECR and S3, an S3 bucket, and
 IAM roles and instance profiles for the control plane and the worker nodes, and
-an IAM OIDC provider with an IRSA role for the AWS Load Balancer Controller. The
-pod network is Flannel (VXLAN backend). Written against Terraform >= 1.5 and AWS
+an IAM OIDC provider with IRSA roles for the AWS Load Balancer Controller and
+external-dns, and a public Route 53 hosted zone. The pod network is Flannel
+(VXLAN backend). Written against Terraform >= 1.5 and AWS
 provider ~> 5.0.
 
 **`infra/README.md`** — Documentation for the configuration: a table of the files
@@ -131,10 +157,14 @@ workers are built unless set), `k8s_worker_instance_type` (`t4g.small`),
 `k8s_worker_root_volume_size` (`20`), `imds_hop_limit` (`1`, validated 1-64),
 the two required SSH public-key
 path variables `bastion_public_key_path` and `k8s_public_key_path`,
-`s3_bucket_name` and `oidc_bucket_name` (both nullable), `lbc_namespace`
+`s3_bucket_name` and `oidc_bucket_name` (both nullable), `enable_nat_gateway` (bool, default true), `enable_oidc_provider`
+(bool, default false), `lbc_namespace`
 (`kube-system`), `lbc_service_account` (`aws-load-balancer-controller`),
 `ansible_repo_url` (the public GitHub URL for this repo), `k8smaster_playbook`
-(`systems/k8smaster.yml`), and `tags`.
+(`systems/k8smaster.yml`), `dns_zone_name` (`tp.darcsaint.net`),
+`external_dns_namespace` (`kube-system`), `external_dns_service_account`
+(`external-dns`), `cert_manager_namespace` (`cert-manager`),
+`cert_manager_service_account` (`cert-manager`), and `tags`.
 
 **`infra/vpc.tf`** — An `aws_availability_zones` data source filtered to available,
 non-opt-in AZs; a `locals` block resolving all four subnet AZs via `coalesce`
@@ -154,7 +184,7 @@ the public pair and `kubernetes.io/role/internal-elb` on the private pair.
 **`infra/internet_gateway.tf`** — `aws_internet_gateway.main`, attached to the VPC.
 
 **`infra/nat_gateway.tf`** — `aws_eip.nat` and `aws_nat_gateway.main`, both
-unconditionally provisioned. The NAT gateway is placed in the public subnet and
+gated on `var.enable_nat_gateway` (default true) via `count`. The NAT gateway is placed in the public subnet and
 declares an explicit `depends_on` for the internet gateway.
 
 **`infra/route_tables.tf`** — `aws_route_table.public` with
@@ -209,10 +239,10 @@ attached to either role.
 
 **`infra/cloud-init/k8smaster.cloud-config.yaml.tftpl`** — A cloud-config
 template for the control plane: `package_update`, a `packages` list of `git`,
-`python3-debian` and `python3-boto3`, and cloud-init's native `ansible` module
-configured with `install_method: distro`, `package_name: ansible`, and a `pull`
-block whose `url` and `playbook_name` are interpolated from the Terraform
-variables. Rendered into `aws_instance.k8s_master`'s `user_data` with
+`python3-debian`, `python3-boto3` cloud-init's native `ansible` module
+and `python3-kubernetes`, and cloud-init's native `ansible` module configured
+with `install_method: distro`, `package_name: ansible`, and a `pull` block whose
+`url` and `playbook_name` are interpolated from the Terraform variables. Rendered into `aws_instance.k8s_master`'s `user_data` with
 `templatefile()`.
 
 **`infra/s3.tf`** — An `aws_caller_identity` data source and two buckets.
@@ -227,7 +257,10 @@ public access block keeps ACLs blocked but permits a public bucket policy, and
 `aws_s3_bucket_policy.oidc` grants anonymous `s3:GetObject` on objects only —
 no listing, no writes.
 
-**`infra/irsa.tf`** — `aws_iam_openid_connect_provider.cluster`, registering the
+**`infra/irsa.tf`** — All resources here are gated on `var.enable_oidc_provider`
+(default false) via `count`, because IAM validates the issuer at provider
+creation and the discovery documents only exist once the cluster is running.
+`aws_iam_openid_connect_provider.cluster`, registering the
 cluster's OIDC issuer (the public bucket from s3.tf) with `client_id_list` of
 `sts.amazonaws.com` and no thumbprint list, since AWS validates S3-hosted JWKS
 endpoints against its own trusted CAs. Plus an `aws_iam_policy_document` trust
@@ -236,7 +269,27 @@ on `<issuer host>:sub` equal to
 `system:serviceaccount:<var.lbc_namespace>:<var.lbc_service_account>` and
 `<issuer host>:aud` equal to `sts.amazonaws.com`;
 `aws_iam_role.aws_load_balancer_controller` built on it; and an attachment of the
-vendored controller policy to that role.
+vendored controller policy to that role. Then the same pattern for external-dns:
+a trust policy pinned to
+`system:serviceaccount:<var.external_dns_namespace>:<var.external_dns_service_account>`,
+`aws_iam_policy.external_dns` granting `route53:ChangeResourceRecordSets`,
+`ListResourceRecordSets` and `ListTagsForResources` on the hosted zone's ARN plus
+`route53:ListHostedZones` on `*` (that action has no resource-level permissions),
+`aws_iam_role.external_dns`, and the attachment joining them. Then the same
+pattern again for cert-manager: a trust policy pinned to
+`system:serviceaccount:<var.cert_manager_namespace>:<var.cert_manager_service_account>`,
+and `aws_iam_policy.cert_manager` following cert-manager's documented Route 53
+solver policy — `route53:GetChange` on `change/*`, `ChangeResourceRecordSets`
+and `ListResourceRecordSets` on the hosted zone ARN under a
+`ForAllValues:StringEquals` condition restricting
+`route53:ChangeResourceRecordSetsRecordTypes` to `TXT`, and
+`route53:ListHostedZonesByName` on `*` — plus `aws_iam_role.cert_manager` and
+its attachment.
+
+**`infra/route53.tf`** — `aws_route53_zone.tp`, the public hosted zone named by
+`var.dns_zone_name` (default `tp.darcsaint.net`). The NS delegation from the
+parent domain is not created here, since the parent zone is not managed by this
+configuration.
 
 **`infra/vpc_endpoints.tf`** — The `aws_vpc_endpoint.s3` gateway endpoint,
 attached to the private route table, keeping the private subnet's S3 traffic off
