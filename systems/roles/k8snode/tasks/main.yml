@@ -1,20 +1,40 @@
 ---
 
+# mode: get, not copy. copy is a server-side S3-to-S3 object copy and ignores
+# dest entirely ("Ignored when mode is not get"), so nothing landed locally.
 - name: Copy join command from s3
   amazon.aws.s3_object:
-   copy_src:
-    bucket: tp-app-757743287485
-    object: cluster-join-command
+   bucket: tp-app-757743287485
+   object: cluster-join-command
    dest: /tmp/cluster-join-command
-   mode: copy
+   mode: get
 
+# slurp rather than lookup('file', ...): a lookup reads from the controller, not
+# the target. Under ansible-pull those are the same host so either works, but
+# this stays correct if the playbook is ever run from a control node.
+- name: Read the join command file
+  ansible.builtin.slurp:
+   src: /tmp/cluster-join-command
+  register: join_cmd_raw
+
+# register is a task keyword taking a variable name, not a module -- the
+# previous form here had no module at all and failed the playbook at parse time
+# with "no module/action detected in task".
 - name: Get join command
-  register:
-   join_cmd: "{{ lookup('file', '/tmp/cluster-join-command') }}"
+  ansible.builtin.set_fact:
+   join_cmd: "{{ join_cmd_raw.content | b64decode | trim }}"
 
+# Unquoted. Wrapping the command in literal quotes makes the shell treat the
+# whole string as a single command name: rc 127, "kubeadm join ...: not found".
 - name: Join cluster
-  ansible.builtin.shell: |
-    "{{ join_cmd }}"
+  ansible.builtin.shell: "{{ join_cmd }}"
+  args:
+   # kubeadm join is not idempotent: on an already-joined node it fails
+   # preflight because kubelet.conf and the CA exist and the kubelet port is in
+   # use. kubelet.conf is written by a successful join, so it is the sentinel
+   # that makes a re-run a no-op. Mirrors the creates guard on kubeadm init in
+   # the k8smaster role.
+   creates: /etc/kubernetes/kubelet.conf
 
 - name: Enable and check kubelet service
   systemd:

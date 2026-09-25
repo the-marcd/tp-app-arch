@@ -88,7 +88,7 @@ data "aws_iam_policy_document" "s3_access" {
   statement {
     sid       = "ReadWriteObjects"
     effect    = "Allow"
-    actions   = ["s3:GetObject", "s3:PutObject"]
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:PutObjectAcl"]
     resources = ["${aws_s3_bucket.main.arn}/*"]
   }
 
@@ -100,10 +100,13 @@ data "aws_iam_policy_document" "s3_access" {
     resources = [aws_s3_bucket.oidc.arn]
   }
 
+  # PutObjectAcl is granted in IAM, but note both buckets block public ACLs and
+  # neither sets aws_s3_bucket_ownership_controls, so they keep the
+  # BucketOwnerEnforced default and reject ACLs outright -- see README.
   statement {
     sid       = "WriteOidcObjects"
     effect    = "Allow"
-    actions   = ["s3:PutObject"]
+    actions   = ["s3:PutObject", "s3:PutObjectAcl"]
     resources = ["${aws_s3_bucket.oidc.arn}/*"]
   }
 }

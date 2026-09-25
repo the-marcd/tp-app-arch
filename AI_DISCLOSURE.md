@@ -15,6 +15,7 @@ than claiming the whole file.
 | `systems/roles/k8smaster/files/kubeadm-config.yaml` | All content. |
 | `systems/roles/k8smaster/files/containerd-config.toml` | All content (replacing a user-authored file). |
 | `systems/roles/k8smaster/tasks/main.yml` | Partial: specific task edits only, described below. |
+| `systems/roles/k8snode/tasks/main.yml` | Partial: three bug fixes only, described below. |
 | `.claude/settings.json` | All content. |
 | `.claude/hooks/ai-disclosure-reminder.sh` | All content. |
 | `infra/README.md` | All content. |
@@ -44,6 +45,30 @@ than claiming the whole file.
 ### `AI_DISCLOSURE.md`
 
 This disclosure document, in the repository root.
+
+### `systems/roles/k8snode/tasks/main.yml`
+
+**Not an AI-authored file** — the role is the user's. This program fixed three
+defects in it and wrote nothing else:
+
+1. The S3 download used `mode: copy` with `copy_src` and `dest`. `copy` is a
+   server-side S3-to-S3 object copy and ignores `dest`, so no file arrived
+   locally. Changed to `mode: get` with `bucket`, `object` and `dest`.
+2. The "Get join command" task used `register:` as though it were a module,
+   with a mapping value. `register` is a task keyword taking a variable name, so
+   the task had no module and the playbook failed to parse. Replaced with
+   `ansible.builtin.slurp` into a registered variable plus
+   `ansible.builtin.set_fact` decoding and trimming it.
+3. The "Join cluster" task wrapped the command in literal quotes inside a
+   `shell: |` block, making the shell treat the whole string as one command name
+   (rc 127, "not found"). Unquoted it.
+
+Plus one change made at the user's request rather than as a fix: an
+`args: creates: /etc/kubernetes/kubelet.conf` guard on the "Join cluster" task,
+so a re-run is a no-op instead of a `kubeadm join` preflight failure. It mirrors
+the guard on `kubeadm init` in the k8smaster role.
+
+Explanatory comments accompany each change.
 
 ### `systems/roles/k8smaster/tasks/main.yml`
 
@@ -228,8 +253,9 @@ instance, and `<var.name>-k8s-node`, wired to the `k8s_worker` nodes. Both get
 the AWS-managed `AmazonEC2ContainerRegistryReadOnly`. Two customer-managed S3
 policies built from policy documents and scoped to the bucket in s3.tf:
 `<var.name>-s3-access` (on the application bucket: `s3:ListBucket`,
-`s3:GetObject` and `s3:PutObject`; on the OIDC bucket: `s3:ListBucket` and
-`s3:PutObject`) attached to the master role, and
+`s3:GetObject`, `s3:PutObject` and `s3:PutObjectAcl`; on the OIDC bucket:
+`s3:ListBucket`, `s3:PutObject` and `s3:PutObjectAcl`) attached to the master
+role, and
 `<var.name>-s3-read` (`s3:ListBucket` and `s3:GetObject`) attached to the node
 role. Also `aws_iam_policy.aws_load_balancer_controller`, whose document is read
 with `file()` from the vendored JSON under policies/, attached to both roles

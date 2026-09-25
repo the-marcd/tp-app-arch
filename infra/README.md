@@ -270,12 +270,22 @@ The two S3 policies differ only in write access:
 
 | Policy | Role | Bucket | Actions |
 | --- | --- | --- | --- |
-| `<name>-s3-access` | master | application | `s3:ListBucket`; `s3:GetObject`, `s3:PutObject` |
-| `<name>-s3-access` | master | OIDC | `s3:ListBucket`; `s3:PutObject` |
+| `<name>-s3-access` | master | application | `s3:ListBucket`; `s3:GetObject`, `s3:PutObject`, `s3:PutObjectAcl` |
+| `<name>-s3-access` | master | OIDC | `s3:ListBucket`; `s3:PutObject`, `s3:PutObjectAcl` |
 | `<name>-s3-read` | workers | application | `s3:ListBucket`; `s3:GetObject` |
 
 Every statement is scoped to a named bucket — `ListBucket` on the bucket ARN,
-object actions on `<arn>/*`. The master's OIDC grant is write-only by design:
+object actions on `<arn>/*`.
+
+**`s3:PutObjectAcl` is granted in IAM but will not work against either bucket as
+configured.** Both set `block_public_acls` and `ignore_public_acls`, and neither
+declares `aws_s3_bucket_ownership_controls`, so both keep the current S3 default
+of `BucketOwnerEnforced` — which disables ACLs entirely and makes any
+`PutObjectAcl` call fail with `AccessControlListNotSupported`, whatever IAM
+says. Making it usable means adding an ownership-controls resource set to
+`ObjectWriter` and relaxing the public-ACL blocks, which is a bucket-level
+decision rather than an IAM one. Public reads on the OIDC bucket already come
+from its bucket policy and need no ACL. The master's OIDC grant is write-only by design:
 it publishes the discovery documents, and reading them back is what the public
 bucket policy is for.
 
