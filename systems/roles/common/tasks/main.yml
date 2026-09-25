@@ -13,7 +13,7 @@
 
 - name: Add required kernel modules
   community.general.modprobe:
-   name: {{ item }}
+   name: "{{ item }}"
    state: present
    persistent: present
   with_items: 
