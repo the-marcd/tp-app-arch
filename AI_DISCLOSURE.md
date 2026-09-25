@@ -13,6 +13,11 @@ than claiming the whole file.
 | --- | --- |
 | `AI_DISCLOSURE.md` | This file. |
 | `cluster_base/README.md` | All content. |
+| `cluster_base/website-namespace.yaml` | All content. |
+| `cluster_base/website-role.yaml` | All content. |
+| `cluster_base/website-rolebinding.yaml` | All content. |
+| `user_setup/create-user-csr.sh` | All content. |
+| `user_setup/README.md` | All content. |
 | `cluster_base/cert-manager/kustomization.yaml` | All content. |
 | `cluster_base/cert-manager/irsa-patch.yaml` | All content. |
 | `cluster_base/cert-manager/clusterissuer-letsencrypt.yaml` | All content. |
@@ -83,11 +88,44 @@ ambient credentials cert-manager applies to ClusterIssuers by default.
 **`cluster_base/aws-load-balancer-controller/kustomization.yaml`** — Remote base
 on AWS Load Balancer Controller `v3.5.0` plus the patch below.
 
+**`cluster_base/website-namespace.yaml`** — A single `Namespace` named
+`website`.
+
+**`cluster_base/website-role.yaml`** — A namespaced `Role`, `website-editor`, in
+that namespace. Three rules: `create`/`get`/`list`/`watch`/`update`/`patch` on
+`apps` deployments; the same verbs on core configmaps and services; and those
+plus `delete` and `deletecollection` on core pods.
+
+**`cluster_base/website-rolebinding.yaml`** — A `RoleBinding` in the `website`
+namespace tying that Role to a single `User` subject. The subject name ships as
+the placeholder `CHANGE-ME-username`, because RBAC does not validate that a
+subject exists and a wrong name applies cleanly while granting nothing.
+
 **`cluster_base/aws-load-balancer-controller/irsa-and-flags-patch.yaml`** — The
 same IRSA additions applied to the `controller` container of the
 `aws-load-balancer-controller` Deployment in `kube-system`, and a wholesale
 replacement of its `args` with `--cluster-name`, `--ingress-class`,
 `--aws-vpc-id` and `--aws-region`, the latter two being required off EKS.
+
+### `user_setup/`
+
+**`user_setup/create-user-csr.sh`** — A bash script generating a 2048-bit RSA
+key and an x509 certificate signing request whose subject carries the username
+as `CN` and each requested group as an `O`, then writing and optionally
+submitting a `certificates.k8s.io/v1` CertificateSigningRequest with the PEM
+request base64-encoded, `signerName: kubernetes.io/kube-apiserver-client`, a
+configurable `expirationSeconds` and the `client auth` usage. Validates the
+username and expiry, refuses to overwrite an existing private key or an existing
+CSR object, creates the key under `umask 077`, and uses `openssl base64 -A`
+rather than the GNU-only `base64 -w0`.
+
+**`user_setup/README.md`** — How certificate-based identity maps to Kubernetes
+users and groups, and the kubectl commands for the full flow: submit, inspect
+the subject, approve or deny, extract the signed certificate, apply the namespace, Role and RoleBinding, assemble a
+kubeconfig, and verify with `auth whoami` / `auth can-i`. Opens with a sequence
+diagram making the approval step explicit as a manual gate that nothing is
+issued before. Includes the revocation caveat (no CRL support, so expiry and
+RoleBinding removal are the only controls) and notes specific to this cluster.
 
 ### `systems/roles/common/tasks/main.yml`
 
@@ -297,7 +335,11 @@ instance role's credentials.
 `k8s_worker` security groups, plus their rules as standalone
 `aws_vpc_security_group_ingress_rule` / `aws_vpc_security_group_egress_rule`
 resources (standalone rather than inline because the master and worker groups
-reference each other). Unrestricted egress for all three; SSH to the bastion
+reference each other), plus a fourth `load_balancer` group carrying HTTPS from
+`0.0.0.0/0` and all traffic from the worker group as ingress, all traffic to the
+worker group as egress, and an all-traffic egress rule from the workers back to
+it. Unrestricted egress for the three node
+groups; SSH to the bastion
 from each CIDR in `var.bastion_ssh_cidrs` via `for_each`; all protocols and
 ports to both k8s roles from the bastion's security group (replacing earlier
 port-22-only rules, making the bastion a full jump host); and, following a port table supplied by the user, 6443 to

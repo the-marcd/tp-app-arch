@@ -1,0 +1,28 @@
+# Binds the website-editor Role to a single user.
+#
+# >>> SET THE SUBJECT NAME BEFORE APPLYING. <<<
+#
+# It must match the CN of the user's client certificate exactly. RBAC does not
+# validate that a subject exists -- there is no User object to check against --
+# so a wrong or unedited name applies cleanly and silently grants nothing. The
+# symptom is the user being denied at request time, not an error here.
+#
+# Check what a certificate actually authenticates as:
+#   kubectl --kubeconfig=<theirs> auth whoami
+#
+# To grant this to a group instead, change kind to Group and use the O from the
+# certificate subject. That scales better: new users join by holding the right
+# O, with no change here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: website-editor
+  namespace: website
+subjects:
+  - kind: User
+    name: CHANGE-ME-username
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: website-editor
+  apiGroup: rbac.authorization.k8s.io

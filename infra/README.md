@@ -245,7 +245,33 @@ Ports follow the supplied port table.
 | 10256 | TCP | worker SG (self) | kube-proxy health endpoint |
 | 30000–32767 | TCP **and** UDP | VPC CIDR | NodePort services |
 
-All three groups allow unrestricted egress.
+All three node groups allow unrestricted egress.
+
+### Load balancer group
+
+`<name>-load-balancer` is for load balancers the AWS Load Balancer Controller
+provisions. It is only used if an Ingress names it via
+`alb.ingress.kubernetes.io/security-groups`; without that annotation the
+controller creates and manages a group of its own and this one sits idle.
+
+| Direction | Port | Protocol | Peer |
+| --- | --- | --- | --- |
+| ingress | 443 | TCP | `0.0.0.0/0` |
+| ingress | all | all | worker SG |
+| egress | all | all | worker SG |
+
+The egress rule is the one that carries traffic: an ALB opens connections *to*
+its targets, and a security group with no egress rules blocks all outbound, so
+without it the load balancer could not reach the NodePorts at all.
+
+**There is no port 80 rule.** An HTTP-to-HTTPS redirect listener needs one
+added.
+
+The worker group also has an all-traffic egress rule to this group. That grants
+nothing beyond the existing allow-all egress to `0.0.0.0/0`, and it is not the
+direction load balancer traffic travels — the ALB connects inbound to the
+NodePort range, which the `30000-32767` from-VPC-CIDR ingress rule already
+covers.
 
 ### Pod network: Flannel (VXLAN backend)
 

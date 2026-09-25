@@ -223,3 +223,8 @@ output "cert_manager_role_arn" {
   description = "ARN of the IRSA role for the cert-manager service account; set as its eks.amazonaws.com/role-arn annotation."
   value       = one(aws_iam_role.cert_manager[*].arn)
 }
+
+output "load_balancer_security_group_id" {
+  description = "ID of the load balancer security group; pass to Ingresses via the alb.ingress.kubernetes.io/security-groups annotation."
+  value       = aws_security_group.load_balancer.id
+}

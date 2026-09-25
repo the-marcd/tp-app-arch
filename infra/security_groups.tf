@@ -28,6 +28,20 @@ resource "aws_security_group" "k8s_master" {
   }
 }
 
+# Attached to load balancers the AWS Load Balancer Controller provisions, via
+# the alb.ingress.kubernetes.io/security-groups annotation. Without that
+# annotation the controller creates and manages its own group instead and this
+# one goes unused.
+resource "aws_security_group" "load_balancer" {
+  name        = "${var.name}-load-balancer"
+  description = "Load balancers fronting the cluster"
+  vpc_id      = aws_vpc.main.id
+
+  tags = {
+    Name = "${var.name}-load-balancer"
+  }
+}
+
 resource "aws_security_group" "k8s_worker" {
   name        = "${var.name}-k8s-worker"
   description = "k8s workers"
@@ -61,6 +75,51 @@ resource "aws_vpc_security_group_egress_rule" "k8s_worker_all" {
   description       = "All outbound"
   ip_protocol       = "-1"
   cidr_ipv4         = "0.0.0.0/0"
+}
+
+# ---------------------------------------------------------------------------
+# Load balancer.
+#
+# HTTPS from anywhere, plus anything from the workers. Note there is no port 80
+# rule: a listener redirecting HTTP to HTTPS would need one added.
+# ---------------------------------------------------------------------------
+
+resource "aws_vpc_security_group_ingress_rule" "load_balancer_https" {
+  security_group_id = aws_security_group.load_balancer.id
+  description       = "HTTPS from anywhere"
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "load_balancer_from_workers" {
+  security_group_id            = aws_security_group.load_balancer.id
+  description                  = "All traffic from the worker nodes"
+  ip_protocol                  = "-1"
+  referenced_security_group_id = aws_security_group.k8s_worker.id
+}
+
+# The direction load balancer traffic actually travels: the ALB opens
+# connections to the NodePorts. A security group with no egress rules blocks all
+# outbound, so without this the load balancer cannot reach its targets at all.
+resource "aws_vpc_security_group_egress_rule" "load_balancer_to_workers" {
+  security_group_id            = aws_security_group.load_balancer.id
+  description                  = "All traffic to the worker nodes"
+  ip_protocol                  = "-1"
+  referenced_security_group_id = aws_security_group.k8s_worker.id
+}
+
+# Egress from the workers to the load balancer group. Note the worker group
+# already allows all egress to 0.0.0.0/0, so this grants nothing new -- and the
+# direction that actually carries load balancer traffic is the opposite one:
+# the load balancer opens connections TO the NodePorts, which the existing
+# 30000-32767-from-VPC-CIDR ingress rule covers.
+resource "aws_vpc_security_group_egress_rule" "k8s_worker_to_load_balancer" {
+  security_group_id            = aws_security_group.k8s_worker.id
+  description                  = "All traffic to the load balancer group"
+  ip_protocol                  = "-1"
+  referenced_security_group_id = aws_security_group.load_balancer.id
 }
 
 # ---------------------------------------------------------------------------

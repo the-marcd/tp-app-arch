@@ -1,0 +1,60 @@
+# Namespaced Role for the website namespace.
+#
+# Verb sets:
+#   create, get, list, watch, update, patch   -- create/read/update, no removal
+#   + delete, deletecollection                -- full CRUD
+#
+# "read" is three verbs, not one: get fetches a named object, list enumerates
+# them, and watch streams changes. kubectl get needs list, and most controllers
+# and informers need watch, so dropping either breaks ordinary use.
+#
+# Removal is likewise two verbs. Omitting delete but leaving deletecollection
+# would still permit `kubectl delete --all`, so both are withheld from the
+# create/read/update resources.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: website-editor
+  namespace: website
+rules:
+  # Deployments live in the apps API group, not core.
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - update
+      - patch
+
+  # configmaps and services are core resources: apiGroups is the empty string.
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - services
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - update
+      - patch
+
+  # Pods get the same set plus deletion.
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - update
+      - patch
+      - delete
+      - deletecollection
