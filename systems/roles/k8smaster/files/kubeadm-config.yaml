@@ -18,7 +18,14 @@
 # The service-account-issuer value is the oidc_issuer_url output from infra/.
 # Set it at init: changing it on a running cluster changes the iss claim on new
 # tokens and invalidates existing ones.
----
+#
+# NOTE: no "---" between this header and the first document below. kubeadm's
+# SplitConfigDocuments only skips zero-length chunks, so a comment block sitting
+# before its own "---" is passed to the decoder as a document in its own right.
+# It has no kind or apiVersion, and kubeadm rejects the whole file with:
+#   invalid configuration for GroupVersionKind /, Kind=: kind and apiVersion is
+#   mandatory information that must be specified
+# Leaving the separator out makes these comments part of the first document.
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
 nodeRegistration:
