@@ -10,7 +10,7 @@
 - name: Set up kubeadm config file
   ansible.builtin.copy:
    remote_src: true
-   src: files/kubeadm-config.yaml
+   src: kubeadm-config.yaml
    dest: /tmp/kubeadm-config.yaml
 
 - name: Init Kubernetes cluster
@@ -168,6 +168,7 @@
 - name: "Copy config file"
   when: apiserver_ready is succeeded
   ansible.builtin.copy:
+   remote_src: true
    src: /etc/kubernetes/admin.conf
    dest: "{{ ansible_env.HOME }}/.kube/config"
    owner: root
