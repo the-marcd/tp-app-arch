@@ -36,6 +36,7 @@ than claiming the whole file.
 | `infra/route53.tf` | All content. |
 | `infra/s3.tf` | All content. |
 | `infra/cloud-init/k8smaster.cloud-config.yaml.tftpl` | All content. |
+| `infra/cloud-init/k8snode.cloud-config.yaml.tftpl` | All content. |
 | `infra/policies/aws-load-balancer-controller-iam-policy.json` | Vendored upstream file, not authored. |
 | `infra/key_pairs.tf` | All content. |
 | `infra/outputs.tf` | All content. |
@@ -186,7 +187,8 @@ path variables `bastion_public_key_path` and `k8s_public_key_path`,
 (bool, default false), `lbc_namespace`
 (`kube-system`), `lbc_service_account` (`aws-load-balancer-controller`),
 `ansible_repo_url` (the public GitHub URL for this repo), `k8smaster_playbook`
-(`systems/k8smaster.yml`), `dns_zone_name` (`tp.darcsaint.net`),
+(`systems/k8smaster.yml`), `k8snode_playbook` (`systems/k8snode.yml`),
+`dns_zone_name` (`tp.darcsaint.net`),
 `external_dns_namespace` (`kube-system`), `external_dns_service_account`
 (`external-dns`), `cert_manager_namespace` (`cert-manager`),
 `cert_manager_service_account` (`cert-manager`), and `tags`.
@@ -238,8 +240,9 @@ instance role's credentials.
 `aws_vpc_security_group_ingress_rule` / `aws_vpc_security_group_egress_rule`
 resources (standalone rather than inline because the master and worker groups
 reference each other). Unrestricted egress for all three; SSH to the bastion
-from each CIDR in `var.bastion_ssh_cidrs` via `for_each`; SSH from the bastion
-to both k8s roles; and, following a port table supplied by the user, 6443 to
+from each CIDR in `var.bastion_ssh_cidrs` via `for_each`; all protocols and
+ports to both k8s roles from the bastion's security group (replacing earlier
+port-22-only rules, making the bastion a full jump host); and, following a port table supplied by the user, 6443 to
 the master from workers and bastion, 2379-2380, 10250, 10257 and 10259 within
 the control plane, 10250 to workers from the control plane, 10256 to workers
 from themselves, and 30000-32767 TCP and UDP to workers from the VPC CIDR.
@@ -271,6 +274,12 @@ and `python3-kubernetes`, and cloud-init's native `ansible` module configured
 with `install_method: distro`, `package_name: ansible`, and a `pull` block whose
 `url` and `playbook_name` are interpolated from the Terraform variables. Rendered into `aws_instance.k8s_master`'s `user_data` with
 `templatefile()`.
+
+**`infra/cloud-init/k8snode.cloud-config.yaml.tftpl`** — The worker equivalent
+of the control-plane template: the same `package_update`, `ansible` pull-mode
+block and output redirection, with a `packages` list of `git`, `python3-debian`
+and `python3-boto3` but no `python3-kubernetes`, since the k8snode role uses no
+`kubernetes.core` modules. Rendered into `aws_instance.k8s_worker`'s `user_data`.
 
 **`infra/s3.tf`** — An `aws_caller_identity` data source and two buckets.
 `aws_s3_bucket.main`, named `<var.name>-<account id>` unless

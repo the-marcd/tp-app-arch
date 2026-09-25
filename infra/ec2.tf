@@ -110,6 +110,20 @@ resource "aws_instance" "k8s_worker" {
   subnet_id              = aws_subnet.private.id
   vpc_security_group_ids = [aws_security_group.k8s_worker.id]
 
+  user_data = templatefile("${path.module}/cloud-init/k8snode.cloud-config.yaml.tftpl", {
+    repo_url = var.ansible_repo_url
+    playbook = var.k8snode_playbook
+  })
+
+  # As on the master: user_data only runs on first boot, so an edit should show
+  # up in the plan as a replacement rather than silently doing nothing.
+  user_data_replace_on_change = true
+
+  # Orders creation only. It does NOT wait for the master to finish bootstrapping
+  # and publish the join command, which is what a worker actually needs -- see
+  # the ordering note in the cloud-init template and the README.
+  depends_on = [aws_instance.k8s_master]
+
   # IMDSv2 only, and a hop limit of 1 so pod traffic -- which crosses the
   # Flannel bridge to reach 169.254.169.254 -- cannot read the instance role's
   # credentials. Workloads that legitimately need them run hostNetwork: true.

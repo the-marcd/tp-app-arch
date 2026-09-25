@@ -19,7 +19,7 @@ Flat Terraform (no modules) for a single AWS VPC with one public and one private
 | `vpc_endpoints.tf` | S3 gateway VPC endpoint |
 | `iam.tf` | IAM roles, instance profiles, S3 policies |
 | `s3.tf` | Application bucket and public OIDC bucket |
-| `cloud-init/` | Control-plane bootstrap template |
+| `cloud-init/` | Control-plane and worker bootstrap templates |
 | `policies/` | Vendored IAM policy JSON |
 | `key_pairs.tf` | SSH key pairs for the bastion and the k8s nodes |
 | `outputs.tf` | IDs of everything created |
@@ -141,8 +141,13 @@ path and will not resolve.
 
 `bastion_ec2`'s group accepts SSH from the CIDRs in `bastion_ssh_cidrs`
 (default `47.197.109.105/32`) and allows all egress. That is the only way into
-the environment — the k8s nodes accept SSH from the bastion's security group
-alone, so everything reaches them through the bastion.
+the environment.
+
+**The nodes admit all protocols and all ports from the bastion's security
+group**, not just TCP 22. The bastion is a full jump host: `kubectl` to 6443,
+NodePorts, the kubelet API, anything. The trade is that the bastion's own
+ingress CIDR list is then the single control keeping all of it closed — there is
+no second layer between the bastion and the cluster.
 
 Widen or replace the list to add more operators:
 
@@ -150,7 +155,31 @@ Widen or replace the list to add more operators:
 bastion_ssh_cidrs = ["47.197.109.105/32", "203.0.113.0/24"]
 ```
 
-## Control-plane bootstrap
+## Node bootstrap
+
+Both roles carry `user_data` rendered from a cloud-init template, each running
+`ansible-pull` against `ansible_repo_url`:
+
+| Instance | Template | Playbook |
+| --- | --- | --- |
+| `k8s_master` | `cloud-init/k8smaster.cloud-config.yaml.tftpl` | `k8smaster_playbook` |
+| `k8s_worker` | `cloud-init/k8snode.cloud-config.yaml.tftpl` | `k8snode_playbook` |
+
+They are separate templates rather than one shared file for two reasons: the
+package lists differ (workers need no `python3-kubernetes`, since the k8snode
+role uses no `kubernetes.core` modules), and editing the master's template would
+change its rendered `user_data` and force that instance to be replaced.
+
+### Worker ordering — not solved by Terraform
+
+The k8snode role fetches the join command from S3, and the master only writes it
+after its own `kubeadm init` completes. `aws_instance.k8s_worker` declares
+`depends_on = [aws_instance.k8s_master]`, but that orders *creation* only — it
+does not wait for the master to finish bootstrapping. A worker that boots first
+fails on the S3 object not existing.
+
+Either bring workers up in a later apply than the master, or add `until`/
+`retries` to the S3 get in `roles/k8snode/tasks/main.yml`.
 
 `k8s_master` carries `user_data` rendered from
 `cloud-init/k8smaster.cloud-config.yaml.tftpl`. It installs `git`,
@@ -200,7 +229,7 @@ Ports follow the supplied port table.
 
 | Port | Protocol | Source | Component |
 | --- | --- | --- | --- |
-| 22 | TCP | bastion SG | SSH |
+| **all** | **all** | **bastion SG** | **jump-host access** |
 | 6443 | TCP | worker SG, bastion SG | kube-apiserver |
 | 2379–2380 | TCP | master SG (self) | etcd client + peer |
 | 10250 | TCP | master SG (self) | kubelet API |
@@ -211,7 +240,7 @@ Ports follow the supplied port table.
 
 | Port | Protocol | Source | Component |
 | --- | --- | --- | --- |
-| 22 | TCP | bastion SG | SSH |
+| **all** | **all** | **bastion SG** | **jump-host access** |
 | 10250 | TCP | master SG | kubelet API |
 | 10256 | TCP | worker SG (self) | kube-proxy health endpoint |
 | 30000–32767 | TCP **and** UDP | VPC CIDR | NodePort services |

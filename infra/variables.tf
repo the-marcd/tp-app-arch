@@ -298,6 +298,12 @@ variable "enable_oidc_provider" {
   default     = false
 }
 
+variable "k8snode_playbook" {
+  description = "Playbook path within the repo for ansible-pull to run on the worker nodes."
+  type        = string
+  default     = "systems/k8snode.yml"
+}
+
 variable "tags" {
   description = "Tags applied to every resource."
   type        = map(string)

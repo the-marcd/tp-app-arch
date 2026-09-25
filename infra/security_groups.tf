@@ -64,7 +64,18 @@ resource "aws_vpc_security_group_egress_rule" "k8s_worker_all" {
 }
 
 # ---------------------------------------------------------------------------
-# Administrative SSH: operator -> bastion, then bastion -> nodes.
+# Administrative access: operator -> bastion on SSH, then bastion -> nodes on
+# anything.
+#
+# The bastion's own ingress stays narrow: TCP 22 from var.bastion_ssh_cidrs
+# only. What widened is what the bastion may reach once you are on it -- the two
+# node groups now admit all protocols and ports from the bastion's security
+# group, replacing the port-22-only rules that were here.
+#
+# This is a deliberate trade: the bastion becomes a full jump host (kubectl to
+# 6443, NodePorts, kubelet, anything else) at the cost of making it the single
+# point that must stay locked down. Its ingress CIDR list is the only thing
+# keeping this closed.
 # ---------------------------------------------------------------------------
 
 resource "aws_vpc_security_group_ingress_rule" "bastion_ssh" {
@@ -78,21 +89,18 @@ resource "aws_vpc_security_group_ingress_rule" "bastion_ssh" {
   cidr_ipv4         = each.value
 }
 
-resource "aws_vpc_security_group_ingress_rule" "k8s_master_ssh" {
+# ip_protocol "-1" means every protocol; from_port/to_port must be omitted.
+resource "aws_vpc_security_group_ingress_rule" "k8s_master_from_bastion" {
   security_group_id            = aws_security_group.k8s_master.id
-  description                  = "SSH from the bastion"
-  from_port                    = 22
-  to_port                      = 22
-  ip_protocol                  = "tcp"
+  description                  = "All traffic from the bastion"
+  ip_protocol                  = "-1"
   referenced_security_group_id = aws_security_group.bastion_ec2.id
 }
 
-resource "aws_vpc_security_group_ingress_rule" "k8s_worker_ssh" {
+resource "aws_vpc_security_group_ingress_rule" "k8s_worker_from_bastion" {
   security_group_id            = aws_security_group.k8s_worker.id
-  description                  = "SSH from the bastion"
-  from_port                    = 22
-  to_port                      = 22
-  ip_protocol                  = "tcp"
+  description                  = "All traffic from the bastion"
+  ip_protocol                  = "-1"
   referenced_security_group_id = aws_security_group.bastion_ec2.id
 }
 
